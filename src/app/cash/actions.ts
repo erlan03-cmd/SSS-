@@ -89,7 +89,7 @@ export async function closeShiftAction(formData: FormData) {
   revalidatePath("/cash");
   revalidatePath("/admin/shifts");
   revalidatePath("/admin/reports");
-  redirect("/cash?shift=closed");
+  redirect("/cash/logout");
 }
 
 export async function cashMovementAction(formData: FormData) {
