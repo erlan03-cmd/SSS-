@@ -14,6 +14,11 @@ import {
   type ActionState,
 } from "@/lib/inventory";
 import { prisma } from "@/lib/prisma";
+import {
+  notifyLowStockAfterSale,
+  notifyReturnRequested,
+  notifyShiftClosed,
+} from "@/lib/telegram";
 
 type CartItemInput = { productId: string; quantity: number };
 
@@ -36,7 +41,7 @@ export async function openShiftAction(formData: FormData) {
 
 export async function closeShiftAction(formData: FormData) {
   const employee = await requireEmployee();
-  await closeCashShift({
+  const closed = await closeCashShift({
     employeeId: employee.id,
     employeeName: employee.name,
     closingCash: decimalFromForm(
@@ -46,6 +51,14 @@ export async function closeShiftAction(formData: FormData) {
       true,
     ),
     note: stringFromForm(formData, "note"),
+  });
+  await notifyShiftClosed({
+    employeeName: employee.name,
+    expectedCash: closed.expectedCash,
+    closingCash: closed.closingCash,
+    difference: closed.cashDifference,
+    totalSales: closed.totalSales,
+    saleCount: closed.saleCount,
   });
   revalidatePath("/cash");
   revalidatePath("/admin/shifts");
@@ -81,6 +94,7 @@ export async function checkoutAction(
       paymentMethod,
       note: String(formData.get("note") ?? "").trim(),
     });
+    await notifyLowStockAfterSale(receipt.id);
     revalidatePath("/cash");
     revalidatePath("/admin");
     revalidatePath("/admin/reports");
@@ -131,6 +145,12 @@ export async function requestReturnAction(formData: FormData) {
     prisma.sale.update({ where: { id: sale.id }, data: { status: "RETURN_REQUESTED" } }),
     prisma.auditLog.create({ data: { action: "RETURN_REQUESTED", entityType: "Sale", entityId: sale.id, actorName: employee.name, employeeId: employee.id, details: { receiptNumber, reason } } }),
   ]);
+  await notifyReturnRequested({
+    receiptNumber,
+    employeeName: employee.name,
+    reason,
+    total: sale.total,
+  });
   revalidatePath("/cash");
   revalidatePath("/admin/returns");
 }

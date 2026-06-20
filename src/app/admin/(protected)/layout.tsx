@@ -1,5 +1,6 @@
 import { AdminNav } from "@/components/admin-nav";
 import { assertAdmin } from "@/lib/admin-auth";
+import { maybeSendDailyTelegramReport } from "@/lib/telegram";
 
 export default async function ProtectedAdminLayout({
   children,
@@ -7,6 +8,7 @@ export default async function ProtectedAdminLayout({
   children: React.ReactNode;
 }) {
   await assertAdmin();
+  await maybeSendDailyTelegramReport();
 
   return (
     <main className="min-h-screen">

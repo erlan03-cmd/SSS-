@@ -4,12 +4,13 @@ import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { assertAdmin } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
+import { notifyReturnDecision } from "@/lib/telegram";
 
 export async function approveReturnAction(formData: FormData) {
   await assertAdmin();
   const id = String(formData.get("id") ?? "");
   const adminNote = String(formData.get("adminNote") ?? "").trim();
-  await prisma.$transaction(async (tx) => {
+  const receiptNumber = await prisma.$transaction(async (tx) => {
     const request = await tx.returnRequest.findUnique({ where: { id }, include: { sale: { include: { items: { include: { product: true } } } } } });
     if (!request || request.status !== "PENDING") throw new Error("Запрос уже обработан");
     for (const item of request.sale.items) {
@@ -19,7 +20,9 @@ export async function approveReturnAction(formData: FormData) {
     await tx.returnRequest.update({ where: { id }, data: { status: "APPROVED", processedAt: new Date(), adminNote } });
     await tx.sale.update({ where: { id: request.saleId }, data: { status: "RETURNED" } });
     await tx.auditLog.create({ data: { action: "RETURN_APPROVED", entityType: "Sale", entityId: request.saleId, actorName: "Владелец", details: { requestId: id, adminNote } } });
+    return request.sale.receiptNumber || request.sale.id;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  await notifyReturnDecision({ receiptNumber, approved: true, note: adminNote });
   revalidatePath("/admin/returns"); revalidatePath("/admin"); revalidatePath("/cash");
 }
 
@@ -27,7 +30,15 @@ export async function rejectReturnAction(formData: FormData) {
   await assertAdmin();
   const id = String(formData.get("id") ?? "");
   const adminNote = String(formData.get("adminNote") ?? "").trim();
-  const request = await prisma.returnRequest.findUniqueOrThrow({ where: { id } });
+  const request = await prisma.returnRequest.findUniqueOrThrow({
+    where: { id },
+    include: { sale: true },
+  });
   await prisma.$transaction([prisma.returnRequest.update({ where: { id }, data: { status: "REJECTED", processedAt: new Date(), adminNote } }), prisma.sale.update({ where: { id: request.saleId }, data: { status: "COMPLETED" } }), prisma.auditLog.create({ data: { action: "RETURN_REJECTED", entityType: "Sale", entityId: request.saleId, actorName: "Владелец", details: { requestId: id, adminNote } } })]);
+  await notifyReturnDecision({
+    receiptNumber: request.sale.receiptNumber || request.sale.id,
+    approved: false,
+    note: adminNote,
+  });
   revalidatePath("/admin/returns"); revalidatePath("/admin");
 }
