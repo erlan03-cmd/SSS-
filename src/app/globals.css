@@ -45,6 +45,46 @@
       linear-gradient(135deg, transparent 48%, rgba(245, 158, 11, 0.12));
   }
 
+  .barcode-label-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 0.5rem;
+  }
+
+  .barcode-label {
+    display: flex;
+    min-height: 120px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    break-inside: avoid;
+    border: 1px dashed hsl(var(--border));
+    padding: 0.45rem;
+    text-align: center;
+  }
+
+  .barcode-label-name {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .barcode-label-price {
+    margin-top: 0.1rem;
+    font-size: 1rem;
+    font-weight: 800;
+  }
+
+  .barcode-label img {
+    margin-top: 0.15rem;
+    max-height: 54px;
+    max-width: 100%;
+  }
+
   @media print {
     header,
     nav,
@@ -54,6 +94,17 @@
 
     body {
       background: white;
+    }
+
+    .barcode-label-grid {
+      grid-template-columns: repeat(3, 58mm);
+      justify-content: center;
+      gap: 2mm;
+    }
+
+    .barcode-label {
+      min-height: 35mm;
+      border: 1px dashed #aaa;
     }
   }
 }

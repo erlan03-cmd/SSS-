@@ -1,5 +1,12 @@
-import { Lightbulb, ShieldCheck } from "lucide-react";
+import { CircleDollarSign, Lightbulb, LogOut, ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { openShiftAction } from "@/app/cash/actions";
 import { CashRegister } from "@/components/cash-register";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { getOpenShiftSummary } from "@/lib/cash-shift";
 import { getCashProducts } from "@/lib/data";
 import { requireEmployee } from "@/lib/employee-auth";
 import { toNumber } from "@/lib/format";
@@ -9,6 +16,53 @@ export const dynamic = "force-dynamic";
 
 export default async function CashPage() {
   const employee = await requireEmployee();
+  const shift = await getOpenShiftSummary(employee.id);
+
+  if (!shift) {
+    return (
+      <main className="flex min-h-screen items-center justify-center px-4 py-8">
+        <Card className="w-full max-w-lg shadow-lg">
+          <CardHeader>
+            <div className="mb-2 flex size-14 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+              <CircleDollarSign className="size-7" />
+            </div>
+            <CardTitle className="text-2xl">Открытие кассовой смены</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              {employee.name}, укажите наличный размен, который уже лежит в кассе.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <form action={openShiftAction} className="space-y-4">
+              <div>
+                <Label htmlFor="openingCash">Размен в кассе, сом</Label>
+                <Input
+                  id="openingCash"
+                  name="openingCash"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  defaultValue="0"
+                  required
+                  autoFocus
+                  className="mt-2 h-14 text-lg"
+                />
+              </div>
+              <Button className="h-14 w-full text-base">
+                <CircleDollarSign /> Открыть смену
+              </Button>
+            </form>
+            <Button asChild variant="ghost" className="w-full">
+              <Link href="/cash/logout">
+                <LogOut /> Выйти из аккаунта
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </main>
+    );
+  }
+
   const [products, heldReceipts] = await Promise.all([
     getCashProducts(),
     prisma.heldReceipt.findMany({
@@ -45,6 +99,7 @@ export default async function CashPage() {
             paymentMethod: receipt.paymentMethod,
             createdAt: receipt.createdAt.toISOString(),
           }))}
+          shift={shift}
         />
       </div>
     </main>

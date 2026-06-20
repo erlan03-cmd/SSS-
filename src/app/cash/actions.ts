@@ -2,11 +2,56 @@
 
 import { PaymentMethod, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { closeCashShift, openCashShift } from "@/lib/cash-shift";
 import { requireEmployee } from "@/lib/employee-auth";
-import { actionError, actionSuccess, checkoutSale, type ActionState } from "@/lib/inventory";
+import {
+  actionError,
+  actionSuccess,
+  checkoutSale,
+  decimalFromForm,
+  stringFromForm,
+  type ActionState,
+} from "@/lib/inventory";
 import { prisma } from "@/lib/prisma";
 
 type CartItemInput = { productId: string; quantity: number };
+
+export async function openShiftAction(formData: FormData) {
+  const employee = await requireEmployee();
+  await openCashShift({
+    employeeId: employee.id,
+    employeeName: employee.name,
+    openingCash: decimalFromForm(
+      formData,
+      "openingCash",
+      "Размен в кассе",
+      true,
+    ),
+  });
+  revalidatePath("/cash");
+  revalidatePath("/admin/shifts");
+  redirect("/cash?shift=opened");
+}
+
+export async function closeShiftAction(formData: FormData) {
+  const employee = await requireEmployee();
+  await closeCashShift({
+    employeeId: employee.id,
+    employeeName: employee.name,
+    closingCash: decimalFromForm(
+      formData,
+      "closingCash",
+      "Фактические наличные",
+      true,
+    ),
+    note: stringFromForm(formData, "note"),
+  });
+  revalidatePath("/cash");
+  revalidatePath("/admin/shifts");
+  revalidatePath("/admin/reports");
+  redirect("/cash?shift=closed");
+}
 
 function parseCart(raw: FormDataEntryValue | null): CartItemInput[] {
   try {
@@ -39,6 +84,7 @@ export async function checkoutAction(
     revalidatePath("/cash");
     revalidatePath("/admin");
     revalidatePath("/admin/reports");
+    revalidatePath("/admin/shifts");
     return actionSuccess("Продажа оформлена", receipt);
   } catch (error) {
     return actionError(error);
