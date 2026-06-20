@@ -14,9 +14,12 @@ const dateFormatter = new Intl.DateTimeFormat("ru-RU", {
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  timeZone: "Asia/Bishkek",
 });
 
-export function toNumber(value: Prisma.Decimal | number | string | null | undefined) {
+export function toNumber(
+  value: Prisma.Decimal | number | string | null | undefined,
+) {
   if (value == null) {
     return 0;
   }
@@ -28,7 +31,9 @@ export function toNumber(value: Prisma.Decimal | number | string | null | undefi
   return Number(value);
 }
 
-export function formatMoney(value: Prisma.Decimal | number | string | null | undefined) {
+export function formatMoney(
+  value: Prisma.Decimal | number | string | null | undefined,
+) {
   return `${moneyFormatter.format(toNumber(value))} сом`;
 }
 
