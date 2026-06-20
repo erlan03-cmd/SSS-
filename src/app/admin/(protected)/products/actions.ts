@@ -38,6 +38,41 @@ function decimal(
   return new Prisma.Decimal(rawValue);
 }
 
+function optionalDecimal(formData: FormData, key: string) {
+  const rawValue = text(formData, key).replace(",", ".");
+  if (!rawValue) return null;
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${key}: введите корректное число`);
+  return new Prisma.Decimal(rawValue);
+}
+
+function productDetails(formData: FormData) {
+  const temperature = text(formData, "colorTemperatureK");
+  return {
+    imageUrl: text(formData, "imageUrl") || null,
+    subcategory: text(formData, "subcategory") || null,
+    brand: text(formData, "brand") || null,
+    sku: text(formData, "sku") || null,
+    supplierId: text(formData, "supplierId") || null,
+    warehouse: text(formData, "warehouse") || null,
+    rack: text(formData, "rack") || null,
+    shelf: text(formData, "shelf") || null,
+    description: text(formData, "description") || null,
+    recommendedOrderQty: optionalDecimal(formData, "recommendedOrderQty") ?? new Prisma.Decimal(0),
+    powerW: optionalDecimal(formData, "powerW"),
+    voltageV: text(formData, "voltageV") || null,
+    socketType: text(formData, "socketType") || null,
+    lightColor: text(formData, "lightColor") || null,
+    colorTemperatureK: temperature ? Number.parseInt(temperature, 10) : null,
+    ipRating: text(formData, "ipRating") || null,
+    size: text(formData, "size") || null,
+    color: text(formData, "color") || null,
+    material: text(formData, "material") || null,
+    cableLengthM: optionalDecimal(formData, "cableLengthM"),
+    wireSectionMm2: optionalDecimal(formData, "wireSectionMm2"),
+  };
+}
+
 async function uniqueProductSlug(baseSlug: string, exceptId?: string) {
   let slug = baseSlug;
   let suffix = 2;
@@ -79,7 +114,12 @@ export async function createProductAction(formData: FormData) {
       minStock: decimal(formData, "minStock", "Минимальный остаток", {
         allowZero: true,
       }),
+      ...productDetails(formData),
     },
+  });
+
+  await prisma.auditLog.create({
+    data: { action: "PRODUCT_CREATED", entityType: "Product", actorName: "Владелец", details: { name, barcode } },
   });
 
   revalidatePath("/admin");
@@ -97,9 +137,10 @@ export async function updateProductAction(formData: FormData) {
   const categoryId = requiredText(formData, "categoryId", "Категория");
   const barcode = text(formData, "barcode") || null;
 
-  await prisma.product.update({
-    where: { id },
-    data: {
+  const nextStock = decimal(formData, "stock", "Остаток", { allowZero: true });
+  await prisma.$transaction(async (tx) => {
+    const previous = await tx.product.findUniqueOrThrow({ where: { id } });
+    await tx.product.update({ where: { id }, data: {
       name,
       slug,
       barcode,
@@ -107,11 +148,16 @@ export async function updateProductAction(formData: FormData) {
       unit: requiredText(formData, "unit", "Единица"),
       price: decimal(formData, "price", "Цена продажи"),
       cost: decimal(formData, "cost", "Себестоимость", { allowZero: true }),
-      stock: decimal(formData, "stock", "Остаток", { allowZero: true }),
+      stock: nextStock,
       minStock: decimal(formData, "minStock", "Минимальный остаток", {
         allowZero: true,
       }),
-    },
+      ...productDetails(formData),
+    } });
+    if (!previous.stock.equals(nextStock)) {
+      await tx.stockMovement.create({ data: { type: "ADJUSTMENT", quantity: nextStock.minus(previous.stock), stockBefore: previous.stock, stockAfter: nextStock, productId: id, note: "Изменение в карточке товара" } });
+    }
+    await tx.auditLog.create({ data: { action: "PRODUCT_UPDATED", entityType: "Product", entityId: id, actorName: "Владелец", details: { name, stockBefore: previous.stock.toString(), stockAfter: nextStock.toString() } } });
   });
 
   revalidatePath("/admin");

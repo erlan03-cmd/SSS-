@@ -1,8 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ADMIN_COOKIE } from "@/lib/admin-auth";
 
+const EMPLOYEE_COOKIE = "sss_employee_session";
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  if (pathname.startsWith("/cash")) {
+    const isPublicCashRoute =
+      pathname.startsWith("/cash/login") || pathname.startsWith("/cash/logout");
+
+    if (!isPublicCashRoute && !request.cookies.get(EMPLOYEE_COOKIE)?.value) {
+      const loginUrl = request.nextUrl.clone();
+      loginUrl.pathname = "/cash/login";
+      loginUrl.search = "";
+      return NextResponse.redirect(loginUrl);
+    }
+
+    return NextResponse.next();
+  }
 
   if (!pathname.startsWith("/admin") || pathname.startsWith("/admin/login")) {
     return NextResponse.next();
@@ -23,5 +39,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*"],
+  matcher: ["/admin/:path*", "/cash/:path*"],
 };

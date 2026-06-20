@@ -1,99 +1,16 @@
-import { ArrowDownCircle, ArrowUpCircle } from "lucide-react";
+import { Activity, ArrowDownCircle, ArrowUpCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFullHistory } from "@/lib/data";
 import { formatDate, formatMoney, formatQuantity } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
 export default async function HistoryPage() {
-  const operations = await getFullHistory(120);
-
-  return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-semibold">История операций</h2>
-        <p className="text-sm text-muted-foreground">
-          Последние {operations.length} продаж и закупок
-        </p>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Продажи и закупки</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {operations.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Тип</TableHead>
-                  <TableHead>Дата</TableHead>
-                  <TableHead>Позиции</TableHead>
-                  <TableHead className="text-right">Сумма</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {operations.map((operation) => (
-                  <TableRow key={`${operation.type}-${operation.id}`}>
-                    <TableCell>
-                      {operation.type === "sale" ? (
-                        <Badge variant="success" className="gap-1">
-                          <ArrowUpCircle className="size-3.5" />
-                          Продажа
-                        </Badge>
-                      ) : (
-                        <Badge variant="warning" className="gap-1">
-                          <ArrowDownCircle className="size-3.5" />
-                          Закупка
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {formatDate(operation.createdAt)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="space-y-2">
-                        {operation.items.map((item) => (
-                          <div key={item.id} className="text-sm">
-                            <p className="font-medium">{item.productName}</p>
-                            <p className="text-muted-foreground">
-                              {formatQuantity(item.quantity, item.unit)} ·{" "}
-                              {"unitPrice" in item
-                                ? `${formatMoney(item.unitPrice)} продажа · ${formatMoney(item.unitCost)} себест.`
-                                : `${formatMoney(item.unitCost)} закупка`}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {formatMoney(operation.total)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-              Операций пока нет
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
+  const { sales, purchases, movements, audits } = await getFullHistory(150);
+  return <div className="space-y-6"><div><h2 className="text-3xl font-bold">История и контроль</h2><p className="text-muted-foreground">Продажи, закупки, движения и действия сотрудников</p></div>
+    <Card><CardHeader><CardTitle>Продажи и поступления</CardTitle></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Тип</TableHead><TableHead>Дата</TableHead><TableHead>Номер / сотрудник</TableHead><TableHead>Позиции</TableHead><TableHead className="text-right">Сумма</TableHead></TableRow></TableHeader><TableBody>{[...sales.map((sale) => ({ kind: "sale" as const, date: sale.createdAt, id: sale.id, title: sale.receiptNumber || "Продажа", actor: sale.employee?.name || "—", total: sale.total, items: sale.items.map((item) => `${item.product.name} × ${formatQuantity(item.quantity, item.product.unit)}`) })), ...purchases.map((purchase) => ({ kind: "purchase" as const, date: purchase.createdAt, id: purchase.id, title: "Поступление", actor: purchase.employee?.name || "Владелец", total: purchase.total, items: purchase.items.map((item) => `${item.product.name} × ${formatQuantity(item.quantity, item.product.unit)}`) }))].sort((a,b)=>+b.date-+a.date).map((operation) => <TableRow key={`${operation.kind}-${operation.id}`}><TableCell><Badge variant={operation.kind === "sale" ? "success" : "warning"}>{operation.kind === "sale" ? <ArrowUpCircle className="mr-1 size-3" /> : <ArrowDownCircle className="mr-1 size-3" />}{operation.kind === "sale" ? "Продажа" : "Приход"}</Badge></TableCell><TableCell>{formatDate(operation.date)}</TableCell><TableCell><p className="font-medium">{operation.title}</p><p className="text-xs text-muted-foreground">{operation.actor}</p></TableCell><TableCell className="max-w-md text-sm">{operation.items.join(", ")}</TableCell><TableCell className="text-right font-semibold">{formatMoney(operation.total)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
+    <section className="grid gap-5 xl:grid-cols-2"><Card><CardHeader><CardTitle>Движение остатков</CardTitle></CardHeader><CardContent className="max-h-[620px] overflow-auto"><Table><TableHeader><TableRow><TableHead>Дата</TableHead><TableHead>Товар</TableHead><TableHead>Тип</TableHead><TableHead>Изменение</TableHead></TableRow></TableHeader><TableBody>{movements.map((movement) => <TableRow key={movement.id}><TableCell>{formatDate(movement.createdAt)}</TableCell><TableCell className="font-medium">{movement.product.name}</TableCell><TableCell>{movement.type}</TableCell><TableCell>{formatQuantity(movement.quantity, movement.product.unit)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card><Card><CardHeader><CardTitle className="flex items-center gap-2"><Activity /> Журнал действий</CardTitle></CardHeader><CardContent className="max-h-[620px] overflow-auto"><div className="space-y-2">{audits.map((audit) => <div key={audit.id} className="rounded-xl border p-3"><div className="flex items-start justify-between gap-3"><div><p className="font-medium">{audit.action}</p><p className="text-sm text-muted-foreground">{audit.actorName} · {audit.entityType}</p></div><span className="text-xs text-muted-foreground">{formatDate(audit.createdAt)}</span></div></div>)}</div></CardContent></Card></section>
+  </div>;
 }

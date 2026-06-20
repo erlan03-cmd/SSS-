@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SSS+ учет склада",
-  description: "Внутренняя система учета товаров строительной компании",
+  title: "SSS+ · электрика и освещение",
+  description: "Система учёта, склада и быстрых продаж магазина электрики",
 };
 
 export default function RootLayout({
