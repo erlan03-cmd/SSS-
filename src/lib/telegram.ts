@@ -77,7 +77,9 @@ export async function sendTelegramMessage(
           reply_markup: {
             keyboard: [
               [{ text: "/report" }, { text: "/last" }, { text: "/top" }],
+              [{ text: "/profit" }, { text: "/week" }, { text: "/cashiers" }],
               [{ text: "/stock" }, { text: "/shifts" }, { text: "/help" }],
+              [{ text: "/returns" }, { text: "/orders" }],
             ],
             resize_keyboard: true,
             is_persistent: true,
@@ -290,6 +292,133 @@ export async function buildProductSearchTelegramReport(query: string) {
       ].join("\n");
     }),
   ].join("\n\n");
+}
+
+async function buildFinanceTelegramReport(days: number, title: string) {
+  const start = new Date(
+    bishkekDay().start.getTime() - Math.max(days - 1, 0) * 24 * 60 * 60 * 1000,
+  );
+  const [sales, items] = await Promise.all([
+    prisma.sale.aggregate({
+      where: { createdAt: { gte: start }, status: { in: countedStatuses } },
+      _sum: { total: true, discountAmount: true },
+      _count: { _all: true },
+    }),
+    prisma.saleItem.findMany({
+      where: {
+        sale: { createdAt: { gte: start }, status: { in: countedStatuses } },
+      },
+      select: { quantity: true, unitPrice: true, unitCost: true },
+    }),
+  ]);
+  const cost = items.reduce(
+    (sum, item) => sum.plus(item.unitCost.mul(item.quantity)),
+    new Prisma.Decimal(0),
+  );
+  const revenue = sales._sum.total ?? new Prisma.Decimal(0);
+  const profit = revenue.minus(cost);
+  const margin = revenue.greaterThan(0)
+    ? profit.mul(100).div(revenue).toDecimalPlaces(1)
+    : new Prisma.Decimal(0);
+  const average = sales._count._all
+    ? revenue.div(sales._count._all).toDecimalPlaces(2)
+    : new Prisma.Decimal(0);
+
+  return [
+    `💰 <b>${escapeTelegramHtml(title)}</b>`,
+    "",
+    `Чеков: <b>${sales._count._all}</b>`,
+    `Выручка: <b>${escapeTelegramHtml(formatMoney(revenue))}</b>`,
+    `Себестоимость: ${escapeTelegramHtml(formatMoney(cost))}`,
+    `Валовая прибыль: <b>${escapeTelegramHtml(formatMoney(profit))}</b>`,
+    `Маржа: <b>${margin.toString()}%</b>`,
+    `Средний чек: ${escapeTelegramHtml(formatMoney(average))}`,
+    `Скидки: ${escapeTelegramHtml(formatMoney(sales._sum.discountAmount ?? 0))}`,
+  ].join("\n");
+}
+
+export function buildTodayProfitTelegramReport() {
+  return buildFinanceTelegramReport(1, "Прибыль за сегодня");
+}
+
+export function buildWeeklyTelegramReport() {
+  return buildFinanceTelegramReport(7, "Итоги за 7 дней");
+}
+
+export async function buildCashiersTelegramReport() {
+  const day = bishkekDay();
+  const grouped = await prisma.sale.groupBy({
+    by: ["employeeId"],
+    where: {
+      createdAt: { gte: day.start },
+      status: { in: countedStatuses },
+      employeeId: { not: null },
+    },
+    _sum: { total: true },
+    _count: { _all: true },
+    orderBy: { _sum: { total: "desc" } },
+  });
+  if (!grouped.length) return "👥 <b>Сегодня продаж по кассирам ещё нет</b>";
+  const employees = await prisma.employee.findMany({
+    where: {
+      id: { in: grouped.flatMap((row) => (row.employeeId ? [row.employeeId] : [])) },
+    },
+    select: { id: true, name: true },
+  });
+  const names = new Map(employees.map((employee) => [employee.id, employee.name]));
+  return [
+    "👥 <b>Кассиры сегодня</b>",
+    "",
+    ...grouped.map(
+      (row, index) =>
+        `${index + 1}. ${escapeTelegramHtml((row.employeeId && names.get(row.employeeId)) || "Сотрудник удалён")} — <b>${escapeTelegramHtml(formatMoney(row._sum.total ?? 0))}</b>, ${row._count._all} чек.`,
+    ),
+  ].join("\n");
+}
+
+export async function buildPendingReturnsTelegramReport() {
+  const requests = await prisma.returnRequest.findMany({
+    where: { status: "PENDING" },
+    include: { sale: true, employee: true },
+    orderBy: { createdAt: "asc" },
+    take: 15,
+  });
+  if (!requests.length) return "✅ <b>Возвратов на проверке нет</b>";
+  return [
+    `↩️ <b>Возвраты на проверке — ${requests.length}</b>`,
+    "",
+    ...requests.map((request) => {
+      const reason =
+        request.reason.length > 80
+          ? `${request.reason.slice(0, 77)}…`
+          : request.reason;
+      return [
+        `<b>${escapeTelegramHtml(request.sale.receiptNumber || request.sale.id)}</b> · ${escapeTelegramHtml(formatMoney(request.sale.total))}`,
+        `${escapeTelegramHtml(request.employee.name)} · ${escapeTelegramHtml(formatDate(request.createdAt))}`,
+        `Причина: ${escapeTelegramHtml(reason)}`,
+      ].join("\n");
+    }),
+  ].join("\n\n");
+}
+
+export async function buildOrdersTelegramReport() {
+  const products = await prisma.product.findMany({
+    where: { active: true, stock: { lte: prisma.product.fields.minStock } },
+    include: { supplier: true },
+    orderBy: [{ stock: "asc" }, { name: "asc" }],
+    take: 25,
+  });
+  if (!products.length) return "✅ <b>Список закупки пуст</b>";
+  return [
+    `🛒 <b>Товары к заказу — ${products.length}</b>`,
+    "",
+    ...products.map((product) => {
+      const recommended = product.recommendedOrderQty.greaterThan(0)
+        ? product.recommendedOrderQty
+        : Prisma.Decimal.max(product.minStock.mul(2).minus(product.stock), 0);
+      return `• ${escapeTelegramHtml(product.name)} — сейчас <b>${escapeTelegramHtml(formatQuantity(product.stock, product.unit))}</b>, заказать ${escapeTelegramHtml(formatQuantity(recommended, product.unit))}${product.supplier ? ` · ${escapeTelegramHtml(product.supplier.name)}` : ""}`;
+    }),
+  ].join("\n");
 }
 
 export async function notifyLowStockAfterSale(saleId: string) {
