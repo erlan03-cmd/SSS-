@@ -1,4 +1,5 @@
 import {
+  CashMovementType,
   CashShiftStatus,
   PaymentMethod,
   Prisma,
@@ -22,6 +23,9 @@ export type CashShiftSummary = {
   totalSales: number;
   saleCount: number;
   expectedCash: number;
+  cashIn: number;
+  cashOut: number;
+  expenses: number;
 };
 
 export async function getOpenShiftSummary(
@@ -33,19 +37,33 @@ export async function getOpenShiftSummary(
   });
   if (!shift) return null;
 
-  const totals = await prisma.sale.groupBy({
-    by: ["paymentMethod"],
-    where: { shiftId: shift.id, status: { in: countedSaleStatuses } },
-    _sum: { total: true },
-    _count: { _all: true },
-  });
+  const [totals, sales, movements] = await Promise.all([
+    prisma.salePayment.groupBy({
+      by: ["method"],
+      where: {
+        sale: { shiftId: shift.id, status: { in: countedSaleStatuses } },
+      },
+      _sum: { amount: true },
+    }),
+    prisma.sale.aggregate({
+      where: { shiftId: shift.id, status: { in: countedSaleStatuses } },
+      _sum: { total: true },
+      _count: { _all: true },
+    }),
+    prisma.cashMovement.groupBy({
+      by: ["type"],
+      where: { shiftId: shift.id },
+      _sum: { amount: true },
+    }),
+  ]);
   const amount = (method: PaymentMethod) =>
-    totals.find((row) => row.paymentMethod === method)?._sum.total?.toNumber() ?? 0;
+    totals.find((row) => row.method === method)?._sum.amount?.toNumber() ?? 0;
+  const movementAmount = (type: CashMovementType) =>
+    movements.find((row) => row.type === type)?._sum.amount?.toNumber() ?? 0;
   const cashSales = amount(PaymentMethod.CASH);
-  const totalSales = totals.reduce(
-    (sum, row) => sum + (row._sum.total?.toNumber() ?? 0),
-    0,
-  );
+  const cashIn = movementAmount(CashMovementType.CASH_IN);
+  const cashOut = movementAmount(CashMovementType.CASH_OUT);
+  const expenses = movementAmount(CashMovementType.EXPENSE);
 
   return {
     id: shift.id,
@@ -55,9 +73,13 @@ export async function getOpenShiftSummary(
     cardSales: amount(PaymentMethod.CARD),
     qrSales: amount(PaymentMethod.QR),
     transferSales: amount(PaymentMethod.TRANSFER),
-    totalSales,
-    saleCount: totals.reduce((sum, row) => sum + row._count._all, 0),
-    expectedCash: shift.openingCash.toNumber() + cashSales,
+    totalSales: sales._sum.total?.toNumber() ?? 0,
+    saleCount: sales._count._all,
+    expectedCash:
+      shift.openingCash.toNumber() + cashSales + cashIn - cashOut - expenses,
+    cashIn,
+    cashOut,
+    expenses,
   };
 }
 
@@ -131,14 +153,17 @@ export async function closeCashShift(input: {
       });
       if (!shift) throw new Error("Открытая кассовая смена не найдена");
 
-      const [cashAggregate, totalAggregate, saleCount] = await Promise.all([
-        tx.sale.aggregate({
+      const [cashAggregate, totalAggregate, saleCount, movementTotals] =
+        await Promise.all([
+        tx.salePayment.aggregate({
           where: {
-            shiftId: shift.id,
-            paymentMethod: PaymentMethod.CASH,
-            status: { in: countedSaleStatuses },
+            method: PaymentMethod.CASH,
+            sale: {
+              shiftId: shift.id,
+              status: { in: countedSaleStatuses },
+            },
           },
-          _sum: { total: true },
+          _sum: { amount: true },
         }),
         tx.sale.aggregate({
           where: {
@@ -153,10 +178,25 @@ export async function closeCashShift(input: {
             status: { in: countedSaleStatuses },
           },
         }),
+        tx.cashMovement.groupBy({
+          by: ["type"],
+          where: { shiftId: shift.id },
+          _sum: { amount: true },
+        }),
       ]);
-      const cashSales = cashAggregate._sum.total ?? new Prisma.Decimal(0);
+      const cashSales = cashAggregate._sum.amount ?? new Prisma.Decimal(0);
       const totalSales = totalAggregate._sum.total ?? new Prisma.Decimal(0);
-      const expectedCash = shift.openingCash.plus(cashSales);
+      const movementAmount = (type: CashMovementType) =>
+        movementTotals.find((row) => row.type === type)?._sum.amount ??
+        new Prisma.Decimal(0);
+      const cashIn = movementAmount(CashMovementType.CASH_IN);
+      const cashOut = movementAmount(CashMovementType.CASH_OUT);
+      const expenses = movementAmount(CashMovementType.EXPENSE);
+      const expectedCash = shift.openingCash
+        .plus(cashSales)
+        .plus(cashIn)
+        .minus(cashOut)
+        .minus(expenses);
       const cashDifference = input.closingCash.minus(expectedCash);
       const closedAt = new Date();
 
@@ -168,6 +208,9 @@ export async function closeCashShift(input: {
           cashSales,
           expectedCash,
           cashDifference,
+          cashIn,
+          cashOut,
+          expenses,
           note: input.note || null,
           closedAt,
         },
@@ -189,6 +232,9 @@ export async function closeCashShift(input: {
             expectedCash: expectedCash.toString(),
             closingCash: input.closingCash.toString(),
             cashDifference: cashDifference.toString(),
+            cashIn: cashIn.toString(),
+            cashOut: cashOut.toString(),
+            expenses: expenses.toString(),
             note: input.note || null,
           },
         },
@@ -203,8 +249,91 @@ export async function closeCashShift(input: {
         expectedCash,
         closingCash: input.closingCash,
         cashDifference,
+        cashIn,
+        cashOut,
+        expenses,
         closedAt,
       };
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
+}
+
+export async function recordCashMovement(input: {
+  employeeId: string;
+  employeeName: string;
+  type: CashMovementType;
+  amount: Prisma.Decimal;
+  note: string;
+}) {
+  if (!input.amount.isPositive()) throw new Error("Сумма должна быть больше нуля");
+  if (input.note.trim().length < 2) throw new Error("Укажите причину операции");
+
+  return prisma.$transaction(
+    async (tx) => {
+      const shift = await tx.cashShift.findFirst({
+        where: { employeeId: input.employeeId, status: CashShiftStatus.OPEN },
+        orderBy: { openedAt: "desc" },
+      });
+      if (!shift) throw new Error("Открытая кассовая смена не найдена");
+
+      if (input.type !== CashMovementType.CASH_IN) {
+        const [cashPayments, movements] = await Promise.all([
+          tx.salePayment.aggregate({
+            where: {
+              method: PaymentMethod.CASH,
+              sale: {
+                shiftId: shift.id,
+                status: { in: countedSaleStatuses },
+              },
+            },
+            _sum: { amount: true },
+          }),
+          tx.cashMovement.groupBy({
+            by: ["type"],
+            where: { shiftId: shift.id },
+            _sum: { amount: true },
+          }),
+        ]);
+        const movementAmount = (type: CashMovementType) =>
+          movements.find((row) => row.type === type)?._sum.amount ??
+          new Prisma.Decimal(0);
+        const available = shift.openingCash
+          .plus(cashPayments._sum.amount ?? 0)
+          .plus(movementAmount(CashMovementType.CASH_IN))
+          .minus(movementAmount(CashMovementType.CASH_OUT))
+          .minus(movementAmount(CashMovementType.EXPENSE));
+        if (input.amount.greaterThan(available)) {
+          throw new Error(
+            `В кассе недостаточно наличных. Доступно: ${available.toFixed(2)} сом`,
+          );
+        }
+      }
+
+      const movement = await tx.cashMovement.create({
+        data: {
+          type: input.type,
+          amount: input.amount,
+          note: input.note.trim(),
+          shiftId: shift.id,
+          employeeId: input.employeeId,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: `CASH_${input.type}`,
+          entityType: "CashMovement",
+          entityId: movement.id,
+          actorName: input.employeeName,
+          employeeId: input.employeeId,
+          details: {
+            shiftId: shift.id,
+            amount: input.amount.toString(),
+            note: input.note.trim(),
+          },
+        },
+      });
+      return movement;
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );

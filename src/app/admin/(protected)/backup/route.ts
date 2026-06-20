@@ -15,6 +15,8 @@ export async function GET() {
     returnRequests,
     reorderItems,
     heldReceipts,
+    cashShifts,
+    cashMovements,
     auditLogs,
   ] = await prisma.$transaction([
     prisma.category.findMany({ orderBy: { createdAt: "asc" } }),
@@ -35,7 +37,7 @@ export async function GET() {
     }),
     prisma.product.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.sale.findMany({
-      include: { items: true },
+      include: { items: true, payments: true },
       orderBy: { createdAt: "asc" },
     }),
     prisma.purchase.findMany({
@@ -46,13 +48,15 @@ export async function GET() {
     prisma.returnRequest.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.reorderItem.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.heldReceipt.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.cashShift.findMany({ orderBy: { openedAt: "asc" } }),
+    prisma.cashMovement.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.auditLog.findMany({ orderBy: { createdAt: "asc" } }),
   ]);
 
   const createdAt = new Date();
   const backup = {
     format: "sss-operational-backup",
-    version: 1,
+    version: 2,
     createdAt: createdAt.toISOString(),
     security: "Пароли и токены сессий намеренно исключены",
     counts: {
@@ -64,6 +68,8 @@ export async function GET() {
       purchases: purchases.length,
       stockMovements: stockMovements.length,
       returnRequests: returnRequests.length,
+      cashShifts: cashShifts.length,
+      cashMovements: cashMovements.length,
       auditLogs: auditLogs.length,
     },
     data: {
@@ -77,6 +83,8 @@ export async function GET() {
       returnRequests,
       reorderItems,
       heldReceipts,
+      cashShifts,
+      cashMovements,
       auditLogs,
     },
   };

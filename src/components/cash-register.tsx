@@ -4,6 +4,7 @@ import { PaymentMethod } from "@prisma/client";
 import type { IScannerControls } from "@zxing/browser";
 import {
   Barcode,
+  Banknote,
   Boxes,
   Camera,
   CheckCircle2,
@@ -36,6 +37,7 @@ import {
 } from "react";
 import { useFormStatus } from "react-dom";
 import {
+  cashMovementAction,
   checkoutAction,
   closeShiftAction,
   deleteHeldReceiptAction,
@@ -86,6 +88,15 @@ const stockClasses = {
   out: "bg-rose-50 text-rose-700 border-rose-200",
 };
 
+function receiptPaymentLabel(receipt: SaleReceipt) {
+  return receipt.payments
+    .map(
+      (payment) =>
+        `${paymentLabels[payment.method]}: ${payment.amount.toFixed(2)} сом`,
+    )
+    .join(" + ");
+}
+
 function escapeHtml(value: string) {
   return value.replace(
     /[&<>'"]/g,
@@ -109,7 +120,7 @@ function printReceipt(receipt: SaleReceipt) {
         `<tr><td>${escapeHtml(item.name)}<br><small>${item.quantity} × ${item.unitPrice.toFixed(2)}</small></td><td>${item.total.toFixed(2)}</td></tr>`,
     )
     .join("");
-  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(receipt.receiptNumber)}</title><style>body{font:14px Arial,sans-serif;width:72mm;margin:0 auto;padding:8mm 2mm;color:#111}h1{text-align:center;font-size:20px;margin:0}p{text-align:center;margin:5px 0}table{width:100%;border-collapse:collapse;margin:14px 0}td{padding:7px 0;border-bottom:1px dashed #aaa;vertical-align:top}td:last-child{text-align:right;font-weight:700}.total{font-size:20px;font-weight:700;display:flex;justify-content:space-between;border-top:2px solid #111;padding-top:10px}.muted{color:#555;font-size:12px}@media print{body{padding:0}}</style></head><body><h1>SSS+</h1><p>Товарный чек</p><p class="muted">${escapeHtml(receipt.receiptNumber)}<br>${new Date(receipt.createdAt).toLocaleString("ru-RU")}<br>Кассир: ${escapeHtml(receipt.sellerName)}</p><table>${rows}</table><div class="total"><span>ИТОГО</span><span>${receipt.total.toFixed(2)} сом</span></div><p class="muted">Оплата: ${escapeHtml(paymentLabels[receipt.paymentMethod])}</p><p>Спасибо за покупку!</p><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}<\/script></body></html>`);
+  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(receipt.receiptNumber)}</title><style>body{font:14px Arial,sans-serif;width:72mm;margin:0 auto;padding:8mm 2mm;color:#111}h1{text-align:center;font-size:20px;margin:0}p{text-align:center;margin:5px 0}table{width:100%;border-collapse:collapse;margin:14px 0}td{padding:7px 0;border-bottom:1px dashed #aaa;vertical-align:top}td:last-child{text-align:right;font-weight:700}.total{font-size:20px;font-weight:700;display:flex;justify-content:space-between;border-top:2px solid #111;padding-top:10px}.muted{color:#555;font-size:12px}@media print{body{padding:0}}</style></head><body><h1>SSS+</h1><p>Товарный чек</p><p class="muted">${escapeHtml(receipt.receiptNumber)}<br>${new Date(receipt.createdAt).toLocaleString("ru-RU")}<br>Кассир: ${escapeHtml(receipt.sellerName)}</p><table>${rows}</table><div class="total"><span>ИТОГО</span><span>${receipt.total.toFixed(2)} сом</span></div><p class="muted">Оплата: ${escapeHtml(receiptPaymentLabel(receipt))}</p><p>Спасибо за покупку!</p><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}<\/script></body></html>`);
   popup.document.close();
 }
 
@@ -122,7 +133,7 @@ async function shareReceipt(receipt: SaleReceipt) {
         `${item.name}: ${item.quantity} × ${item.unitPrice.toFixed(2)} = ${item.total.toFixed(2)} сом`,
     ),
     `Итого: ${receipt.total.toFixed(2)} сом`,
-    `Оплата: ${paymentLabels[receipt.paymentMethod]}`,
+    `Оплата: ${receiptPaymentLabel(receipt)}`,
     `Кассир: ${receipt.sellerName}`,
   ];
   const text = lines.join("\n");
@@ -368,6 +379,11 @@ export function CashRegister({ products, employee, heldReceipts, shift }: Props)
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     PaymentMethod.CASH,
   );
+  const [splitPayment, setSplitPayment] = useState(false);
+  const [cashPart, setCashPart] = useState("0");
+  const [remainderMethod, setRemainderMethod] = useState<PaymentMethod>(
+    PaymentMethod.CARD,
+  );
   const [scannerOpen, setScannerOpen] = useState(false);
   const [state, formAction] = useActionState(
     checkoutAction,
@@ -423,12 +439,30 @@ export function CashRegister({ products, employee, heldReceipts, shift }: Props)
     employee.maxDiscountPercent,
   );
   const total = subtotal * (1 - discountNumber / 100);
+  const roundedTotal = Number(total.toFixed(2));
+  const splitCash = Math.min(
+    Math.max(Number(String(cashPart).replace(",", ".")) || 0, 0),
+    roundedTotal,
+  );
+  const splitRemainder = Number((roundedTotal - splitCash).toFixed(2));
+  const checkoutPayments = splitPayment
+    ? [
+        ...(splitCash > 0
+          ? [{ method: PaymentMethod.CASH, amount: Number(splitCash.toFixed(2)) }]
+          : []),
+        ...(splitRemainder > 0
+          ? [{ method: remainderMethod, amount: splitRemainder }]
+          : []),
+      ]
+    : [];
   const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   useEffect(() => {
     if (state.ok && state.receipt) {
       setCart([]);
       setDiscount("0");
+      setSplitPayment(false);
+      setCashPart("0");
       setTab("sale");
     }
   }, [state.ok, state.receipt, state.version]);
@@ -678,20 +712,75 @@ export function CashRegister({ products, employee, heldReceipts, shift }: Props)
           >
             <input type="hidden" name="items" value={JSON.stringify(cart)} />
             <div>
-              <Label>Способ оплаты</Label>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {Object.values(PaymentMethod).map((method) => (
-                  <Button
-                    key={method}
-                    type="button"
-                    variant={paymentMethod === method ? "default" : "outline"}
-                    onClick={() => setPaymentMethod(method)}
-                  >
-                    {paymentLabels[method]}
-                  </Button>
-                ))}
+              <div className="flex items-center justify-between gap-3">
+                <Label>Способ оплаты</Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={splitPayment ? "default" : "outline"}
+                  onClick={() => {
+                    setSplitPayment((current) => !current);
+                    setCashPart((roundedTotal / 2).toFixed(2));
+                  }}
+                >
+                  Разделить оплату
+                </Button>
               </div>
+              {!splitPayment ? (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {Object.values(PaymentMethod).map((method) => (
+                    <Button
+                      key={method}
+                      type="button"
+                      variant={paymentMethod === method ? "default" : "outline"}
+                      onClick={() => setPaymentMethod(method)}
+                    >
+                      {paymentLabels[method]}
+                    </Button>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3 rounded-xl border bg-muted/40 p-3">
+                  <div>
+                    <Label htmlFor="cashPart">Наличными, сом</Label>
+                    <Input
+                      id="cashPart"
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      max={roundedTotal}
+                      step="0.01"
+                      value={cashPart}
+                      onChange={(event) => setCashPart(event.target.value)}
+                      className="mt-1 h-12"
+                    />
+                  </div>
+                  <div>
+                    <Label>Остаток {formatMoney(splitRemainder)} оплатить</Label>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      {([PaymentMethod.CARD, PaymentMethod.QR, PaymentMethod.TRANSFER] as const).map(
+                        (method) => (
+                          <Button
+                            key={method}
+                            type="button"
+                            size="sm"
+                            variant={remainderMethod === method ? "default" : "outline"}
+                            onClick={() => setRemainderMethod(method)}
+                          >
+                            {paymentLabels[method]}
+                          </Button>
+                        ),
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
               <input type="hidden" name="paymentMethod" value={paymentMethod} />
+              <input
+                type="hidden"
+                name="payments"
+                value={JSON.stringify(checkoutPayments)}
+              />
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
@@ -830,6 +919,16 @@ export function CashRegister({ products, employee, heldReceipts, shift }: Props)
                   <p className="text-muted-foreground">Наличные продажи</p>
                   <p className="font-semibold">{formatMoney(shift.cashSales)}</p>
                 </div>
+                <div className="rounded-xl bg-emerald-50 p-3 text-emerald-900">
+                  <p className="text-emerald-700">Внесено</p>
+                  <p className="font-semibold">+ {formatMoney(shift.cashIn)}</p>
+                </div>
+                <div className="rounded-xl bg-rose-50 p-3 text-rose-900">
+                  <p className="text-rose-700">Изъято и расходы</p>
+                  <p className="font-semibold">
+                    − {formatMoney(shift.cashOut + shift.expenses)}
+                  </p>
+                </div>
               </div>
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
                 <p className="text-sm text-emerald-800">Ожидается наличных в кассе</p>
@@ -837,6 +936,34 @@ export function CashRegister({ products, employee, heldReceipts, shift }: Props)
                   {formatMoney(shift.expectedCash)}
                 </p>
               </div>
+              <form action={cashMovementAction} className="space-y-3 rounded-xl border p-3">
+                <p className="flex items-center gap-2 font-semibold">
+                  <Banknote className="size-5" /> Операция с наличными
+                </p>
+                <select
+                  name="type"
+                  required
+                  className="flex h-12 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  defaultValue="EXPENSE"
+                >
+                  <option value="EXPENSE">Расход из кассы</option>
+                  <option value="CASH_IN">Внести деньги</option>
+                  <option value="CASH_OUT">Изъять деньги</option>
+                </select>
+                <Input
+                  name="amount"
+                  type="number"
+                  inputMode="decimal"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="Сумма, сом"
+                  required
+                />
+                <Input name="note" placeholder="Причина операции" required />
+                <Button variant="outline" className="w-full">
+                  Записать операцию
+                </Button>
+              </form>
               <form action={closeShiftAction} className="space-y-3 border-t pt-4">
                 <div>
                   <Label htmlFor="closingCash">Фактически пересчитано, сом</Label>

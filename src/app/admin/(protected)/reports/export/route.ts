@@ -34,7 +34,11 @@ export async function GET(request: Request) {
 
   const sales = await prisma.sale.findMany({
     where: { createdAt: { gte: from } },
-    include: { employee: true, items: { include: { product: true } } },
+    include: {
+      employee: true,
+      payments: true,
+      items: { include: { product: true } },
+    },
     orderBy: { createdAt: "desc" },
   });
 
@@ -63,7 +67,12 @@ export async function GET(request: Request) {
         sale.createdAt.toLocaleString("ru-RU", { timeZone: "Asia/Bishkek" }),
         sale.receiptNumber || sale.id,
         sale.employee?.name || "",
-        paymentLabels[sale.paymentMethod] || sale.paymentMethod,
+        sale.payments
+          .map(
+            (payment) =>
+              `${paymentLabels[payment.method] || payment.method}: ${payment.amount.toString()}`,
+          )
+          .join(" + "),
         statusLabels[sale.status] || sale.status,
         sale.discountPercent.toString(),
         sale.discountAmount.toString(),
