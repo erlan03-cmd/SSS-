@@ -88,8 +88,11 @@ model Employee {
   approvedReturns    ReturnRequest[]   @relation("ReturnApprover")
   auditLogs          AuditLog[]
   heldReceipts       HeldReceipt[]
+  deletedAt          DateTime?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
+
+  @@index([deletedAt])
 }
 
 model EmployeeSession {

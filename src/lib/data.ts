@@ -248,7 +248,11 @@ export async function getReorderData() {
 }
 
 export async function getEmployees() {
-  return prisma.employee.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }], include: { _count: { select: { sales: true } } } });
+  return prisma.employee.findMany({
+    where: { deletedAt: null },
+    orderBy: [{ active: "desc" }, { name: "asc" }],
+    include: { _count: { select: { sales: true } } },
+  });
 }
 
 export async function getReturnRequests() {

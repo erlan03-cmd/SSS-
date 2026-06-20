@@ -39,7 +39,12 @@ export async function getCurrentEmployee() {
     include: { employee: true },
   });
 
-  if (!session || session.expiresAt <= new Date() || !session.employee.active) {
+  if (
+    !session ||
+    session.expiresAt <= new Date() ||
+    !session.employee.active ||
+    session.employee.deletedAt
+  ) {
     if (session) {
       await prisma.employeeSession.delete({ where: { id: session.id } }).catch(() => undefined);
     }

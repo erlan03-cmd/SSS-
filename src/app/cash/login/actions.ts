@@ -10,7 +10,12 @@ export async function employeeLoginAction(formData: FormData) {
   const password = String(formData.get("password") ?? "");
   const employee = await prisma.employee.findUnique({ where: { login } });
 
-  if (!employee || !employee.active || !verifyPassword(password, employee.passwordHash)) {
+  if (
+    !employee ||
+    !employee.active ||
+    employee.deletedAt ||
+    !verifyPassword(password, employee.passwordHash)
+  ) {
     redirect("/cash/login?error=1");
   }
 
