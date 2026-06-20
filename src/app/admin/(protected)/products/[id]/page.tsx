@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { ProductForm } from "@/components/product-form";
 import { updateProductAction } from "@/app/admin/(protected)/products/actions";
-import { getCategories, getProductForEdit } from "@/lib/data";
+import { getCategories, getProductForEdit, getSuppliers } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -13,9 +13,10 @@ type PageProps = {
 
 export default async function EditProductPage({ params }: PageProps) {
   const { id } = await params;
-  const [product, categories] = await Promise.all([
+  const [product, categories, suppliers] = await Promise.all([
     getProductForEdit(id),
     getCategories(),
+    getSuppliers(),
   ]);
 
   if (!product) {
@@ -27,6 +28,7 @@ export default async function EditProductPage({ params }: PageProps) {
       <ProductForm
         product={product}
         categories={categories}
+        suppliers={suppliers}
         action={updateProductAction}
         title="Редактирование товара"
         submitLabel="Сохранить"

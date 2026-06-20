@@ -1,59 +1,90 @@
 "use server";
 
+import { PaymentMethod, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
-import {
-  actionError,
-  actionSuccess,
-  decimalFromForm,
-  type ActionState,
-  recordPurchase,
-  recordSale,
-  stringFromForm,
-} from "@/lib/inventory";
+import { requireEmployee } from "@/lib/employee-auth";
+import { actionError, actionSuccess, checkoutSale, type ActionState } from "@/lib/inventory";
+import { prisma } from "@/lib/prisma";
 
-export async function recordSaleAction(
+type CartItemInput = { productId: string; quantity: number };
+
+function parseCart(raw: FormDataEntryValue | null): CartItemInput[] {
+  try {
+    const parsed = JSON.parse(String(raw ?? "[]")) as CartItemInput[];
+    if (!Array.isArray(parsed)) throw new Error();
+    return parsed.map((item) => ({ productId: String(item.productId), quantity: Number(item.quantity) }));
+  } catch {
+    throw new Error("Не удалось прочитать корзину");
+  }
+}
+
+export async function checkoutAction(
   _previousState: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
   try {
-    const productId = stringFromForm(formData, "productId");
-    const quantity = decimalFromForm(formData, "quantity", "Количество");
-    const note = stringFromForm(formData, "note");
-
-    if (!productId) {
-      throw new Error("Выберите товар");
-    }
-
-    await recordSale({ productId, quantity, note });
+    const employee = await requireEmployee();
+    const items = parseCart(formData.get("items"));
+    const discountPercent = Number(String(formData.get("discountPercent") ?? "0").replace(",", "."));
+    const paymentValue = String(formData.get("paymentMethod") ?? "CASH") as PaymentMethod;
+    const paymentMethod = Object.values(PaymentMethod).includes(paymentValue) ? paymentValue : PaymentMethod.CASH;
+    const receipt = await checkoutSale({
+      employeeId: employee.id,
+      sellerName: employee.name,
+      items,
+      discountPercent,
+      paymentMethod,
+      note: String(formData.get("note") ?? "").trim(),
+    });
     revalidatePath("/cash");
     revalidatePath("/admin");
-
-    return actionSuccess("Продажа записана");
+    revalidatePath("/admin/reports");
+    return actionSuccess("Продажа оформлена", receipt);
   } catch (error) {
     return actionError(error);
   }
 }
 
-export async function recordPurchaseAction(
-  _previousState: ActionState,
-  formData: FormData,
-): Promise<ActionState> {
-  try {
-    const productId = stringFromForm(formData, "productId");
-    const quantity = decimalFromForm(formData, "quantity", "Количество");
-    const unitCost = decimalFromForm(formData, "unitCost", "Цена закупки");
-    const note = stringFromForm(formData, "note");
+export async function holdReceiptAction(input: {
+  name: string;
+  items: CartItemInput[];
+  discountPercent: number;
+  paymentMethod: PaymentMethod;
+}) {
+  const employee = await requireEmployee();
+  if (!input.items.length) throw new Error("Корзина пуста");
+  await prisma.heldReceipt.create({
+    data: {
+      name: input.name.trim() || `Чек ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`,
+      items: input.items as unknown as Prisma.InputJsonValue,
+      discountPercent: input.discountPercent,
+      paymentMethod: input.paymentMethod,
+      employeeId: employee.id,
+    },
+  });
+  revalidatePath("/cash");
+}
 
-    if (!productId) {
-      throw new Error("Выберите товар");
-    }
+export async function deleteHeldReceiptAction(id: string) {
+  const employee = await requireEmployee();
+  await prisma.heldReceipt.deleteMany({ where: { id, employeeId: employee.id } });
+  revalidatePath("/cash");
+}
 
-    await recordPurchase({ productId, quantity, unitCost, note });
-    revalidatePath("/cash");
-    revalidatePath("/admin");
-
-    return actionSuccess("Закупка записана");
-  } catch (error) {
-    return actionError(error);
-  }
+export async function requestReturnAction(formData: FormData) {
+  const employee = await requireEmployee();
+  const receiptNumber = String(formData.get("receiptNumber") ?? "").trim();
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!receiptNumber || !reason) return;
+  const sale = await prisma.sale.findFirst({
+    where: { receiptNumber, employeeId: employee.id, status: "COMPLETED" },
+  });
+  if (!sale) throw new Error("Чек не найден или возврат уже оформлен");
+  await prisma.$transaction([
+    prisma.returnRequest.create({ data: { saleId: sale.id, employeeId: employee.id, reason } }),
+    prisma.sale.update({ where: { id: sale.id }, data: { status: "RETURN_REQUESTED" } }),
+    prisma.auditLog.create({ data: { action: "RETURN_REQUESTED", entityType: "Sale", entityId: sale.id, actorName: employee.name, employeeId: employee.id, details: { receiptNumber, reason } } }),
+  ]);
+  revalidatePath("/cash");
+  revalidatePath("/admin/returns");
 }

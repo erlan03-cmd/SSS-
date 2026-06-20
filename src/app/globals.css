@@ -44,4 +44,16 @@
       linear-gradient(135deg, rgba(13, 148, 136, 0.12), transparent 38%),
       linear-gradient(135deg, transparent 48%, rgba(245, 158, 11, 0.12));
   }
+
+  @media print {
+    header,
+    nav,
+    .print\:hidden {
+      display: none !important;
+    }
+
+    body {
+      background: white;
+    }
+  }
 }

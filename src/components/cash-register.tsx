@@ -1,376 +1,293 @@
 "use client";
 
+import { PaymentMethod } from "@prisma/client";
 import {
   Barcode,
   Boxes,
+  Camera,
+  CheckCircle2,
+  Minus,
+  Plus,
   Clock3,
-  PackagePlus,
+  LogOut,
+  PackageSearch,
   ReceiptText,
+  RotateCcw,
   Search,
   ShoppingCart,
+  UserRound,
+  X,
 } from "lucide-react";
-import { useActionState, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useActionState, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
-import { recordPurchaseAction, recordSaleAction } from "@/app/cash/actions";
-import { Badge } from "@/components/ui/badge";
+import { checkoutAction, deleteHeldReceiptAction, holdReceiptAction, requestReturnAction } from "@/app/cash/actions";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { CashProduct, OperationHistoryItem } from "@/lib/data";
-import { formatDate, formatMoney } from "@/lib/format";
+import type { CashProduct } from "@/lib/data";
+import { formatMoney, formatQuantity } from "@/lib/format";
 import { initialActionState } from "@/lib/inventory";
 import { cn } from "@/lib/utils";
 
+type CartItem = { productId: string; quantity: number };
+type HeldReceipt = {
+  id: string;
+  name: string;
+  items: CartItem[];
+  discountPercent: number;
+  paymentMethod: PaymentMethod;
+  createdAt: string;
+};
+
 type Props = {
   products: CashProduct[];
-  history: OperationHistoryItem[];
+  employee: { name: string; maxDiscountPercent: number };
+  heldReceipts: HeldReceipt[];
 };
 
-const stockLabels: Record<CashProduct["stockStatus"], string> = {
-  available: "Есть",
-  low: "Мало",
-  out: "Нет",
+type Tab = "sale" | "products" | "cart" | "held" | "profile";
+
+const paymentLabels: Record<PaymentMethod, string> = {
+  CASH: "Наличные",
+  CARD: "Карта",
+  QR: "QR-оплата",
+  TRANSFER: "Перевод",
 };
 
-const statusClasses: Record<CashProduct["stockStatus"], string> = {
-  available: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  low: "border-amber-200 bg-amber-50 text-amber-800",
-  out: "border-rose-200 bg-rose-50 text-rose-700",
+const stockClasses = {
+  available: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  low: "bg-amber-50 text-amber-700 border-amber-200",
+  out: "bg-rose-50 text-rose-700 border-rose-200",
 };
 
-function SubmitButton({
-  children,
-  disabled,
-}: {
-  children: React.ReactNode;
-  disabled?: boolean;
-}) {
+function CheckoutButton({ disabled }: { disabled: boolean }) {
   const { pending } = useFormStatus();
-
   return (
-    <Button className="h-12 w-full text-base" disabled={pending || disabled}>
-      {pending ? "Записываем..." : children}
+    <Button disabled={disabled || pending} className="h-14 w-full text-base shadow-lg">
+      <CheckCircle2 /> {pending ? "Оформляем..." : "Оформить продажу"}
     </Button>
   );
 }
 
-export function CashRegister({ products, history }: Props) {
-  const [mode, setMode] = useState<"sale" | "purchase">("sale");
-  const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState(products[0]?.id ?? "");
-  const [saleQuantity, setSaleQuantity] = useState("1");
-  const [purchaseQuantity, setPurchaseQuantity] = useState("1");
-  const [purchaseCost, setPurchaseCost] = useState("");
-  const [saleState, saleAction] = useActionState(
-    recordSaleAction,
-    initialActionState,
-  );
-  const [purchaseState, purchaseAction] = useActionState(
-    recordPurchaseAction,
-    initialActionState,
-  );
-
-  const selectedProduct = products.find((product) => product.id === selectedId);
-  const normalizedQuery = query.trim().toLowerCase();
-
-  const visibleProducts = useMemo(() => {
-    if (!normalizedQuery) {
-      return products.slice(0, 12);
-    }
-
-    return products
-      .filter((product) => {
-        const haystack = [
-          product.name,
-          product.barcode ?? "",
-          product.categoryName,
-        ]
-          .join(" ")
-          .toLowerCase();
-
-        return haystack.includes(normalizedQuery);
-      })
-      .slice(0, 12);
-  }, [normalizedQuery, products]);
+function CameraScanner({
+  products,
+  onFound,
+  onClose,
+}: {
+  products: CashProduct[];
+  onFound: (product: CashProduct) => void;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [message, setMessage] = useState("Наведи камеру на штрих‑код");
+  const [manual, setManual] = useState("");
 
   useEffect(() => {
-    if (saleState.ok) {
-      setSaleQuantity("1");
-    }
-  }, [saleState.version, saleState.ok]);
+    let stream: MediaStream | null = null;
+    let timer = 0;
+    let active = true;
 
-  useEffect(() => {
-    if (purchaseState.ok) {
-      setPurchaseQuantity("1");
-      setPurchaseCost("");
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+        if (!videoRef.current) return;
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        const Detector = (window as unknown as { BarcodeDetector?: new (options: { formats: string[] }) => { detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> } }).BarcodeDetector;
+        if (!Detector) {
+          setMessage("Автосканер не поддерживается — введи код вручную");
+          return;
+        }
+        const detector = new Detector({ formats: ["ean_13", "ean_8", "code_128", "qr_code"] });
+        const scan = async () => {
+          if (!active || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            const code = codes[0]?.rawValue;
+            if (code) {
+              const product = products.find((item) => item.barcode === code);
+              if (product) {
+                onFound(product);
+                return;
+              }
+              setMessage(`Код ${code} не найден`);
+            }
+          } catch {}
+          timer = window.setTimeout(scan, 250);
+        };
+        void scan();
+      } catch {
+        setMessage("Нет доступа к камере. Разреши камеру или введи код вручную.");
+      }
     }
-  }, [purchaseState.version, purchaseState.ok]);
+    void start();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, [onFound, products]);
 
-  function selectProduct(product: CashProduct) {
-    setSelectedId(product.id);
-    setQuery(product.name);
+  function submitManual() {
+    const product = products.find((item) => item.barcode === manual.trim());
+    if (product) onFound(product);
+    else setMessage("Товар с таким штрих‑кодом не найден");
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_430px]">
-      <section className="space-y-4">
-        <div className="rounded-lg border border-border bg-card p-3 shadow-soft">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-4 top-1/2 size-6 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                autoFocus
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Поиск по товару, категории или штрихкоду"
-                className="h-16 rounded-md pl-14 text-lg"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2 md:w-72">
-              <Button
-                type="button"
-                size="lg"
-                variant={mode === "sale" ? "default" : "outline"}
-                onClick={() => setMode("sale")}
-              >
-                <ShoppingCart />
-                Продажа
-              </Button>
-              <Button
-                type="button"
-                size="lg"
-                variant={mode === "purchase" ? "default" : "outline"}
-                onClick={() => setMode("purchase")}
-              >
-                <PackagePlus />
-                Закупка
-              </Button>
+    <div className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-white">
+      <div className="flex items-center justify-between p-4">
+        <div><p className="font-semibold">Сканирование</p><p className="text-sm text-slate-300">{message}</p></div>
+        <Button type="button" variant="outline" size="icon" onClick={onClose} className="border-white/20 bg-white/10 text-white"><X /></Button>
+      </div>
+      <div className="relative flex-1 overflow-hidden bg-black">
+        <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
+        <div className="pointer-events-none absolute inset-8 rounded-3xl border-2 border-amber-400 shadow-[0_0_0_999px_rgba(0,0,0,.45)]" />
+      </div>
+      <div className="grid grid-cols-[1fr_auto] gap-2 p-4">
+        <Input value={manual} onChange={(event) => setManual(event.target.value)} placeholder="Ввести штрих‑код" className="h-12 bg-white text-slate-950" />
+        <Button type="button" onClick={submitManual} className="h-12">Найти</Button>
+      </div>
+    </div>
+  );
+}
+
+export function CashRegister({ products, employee, heldReceipts }: Props) {
+  const [tab, setTab] = useState<Tab>("sale");
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("all");
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [discount, setDiscount] = useState("0");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(PaymentMethod.CASH);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [state, formAction] = useActionState(checkoutAction, initialActionState);
+  const [isPending, startTransition] = useTransition();
+  const normalized = query.trim().toLowerCase();
+  const categories = useMemo(() => [...new Map(products.map((product) => [product.categorySlug, product.categoryName])).entries()], [products]);
+
+  const visibleProducts = useMemo(() => products.filter((product) => {
+    const categoryMatches = category === "all" || product.categorySlug === category;
+    const haystack = [product.name, product.barcode, product.sku, product.brand, product.categoryName, product.subcategory, ...product.specifications].filter(Boolean).join(" ").toLowerCase();
+    return categoryMatches && (!normalized || haystack.includes(normalized));
+  }), [category, normalized, products]);
+
+  const detailedCart = cart.map((item) => ({ ...item, product: products.find((product) => product.id === item.productId)! })).filter((item) => item.product);
+  const subtotal = detailedCart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+  const discountNumber = Math.min(Math.max(Number(discount) || 0, 0), employee.maxDiscountPercent);
+  const total = subtotal * (1 - discountNumber / 100);
+  const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+  useEffect(() => {
+    if (state.ok && state.receipt) {
+      setCart([]);
+      setDiscount("0");
+      setTab("sale");
+    }
+  }, [state.ok, state.receipt, state.version]);
+
+  function addProduct(product: CashProduct) {
+    if (product.stock <= 0) return;
+    setCart((current) => {
+      const existing = current.find((item) => item.productId === product.id);
+      if (existing) return current.map((item) => item.productId === product.id ? { ...item, quantity: Math.min(item.quantity + 1, product.stock) } : item);
+      return [...current, { productId: product.id, quantity: 1 }];
+    });
+  }
+
+  function changeQuantity(product: CashProduct, quantity: number) {
+    if (quantity <= 0) setCart((current) => current.filter((item) => item.productId !== product.id));
+    else setCart((current) => current.map((item) => item.productId === product.id ? { ...item, quantity: Math.min(quantity, product.stock) } : item));
+  }
+
+  function holdCurrent() {
+    startTransition(async () => {
+      await holdReceiptAction({ name: "", items: cart, discountPercent: discountNumber, paymentMethod });
+      setCart([]);
+      setDiscount("0");
+      window.location.reload();
+    });
+  }
+
+  const productGrid = (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+      {visibleProducts.map((product) => (
+        <button key={product.id} type="button" onClick={() => addProduct(product)} disabled={product.stock <= 0} className="group min-h-40 rounded-2xl border bg-card p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary hover:shadow-md disabled:opacity-50">
+          <div className="mb-3 flex items-start justify-between gap-2">
+            <div className="flex size-11 items-center justify-center rounded-xl bg-amber-50 text-amber-700"><PackageSearch className="size-6" /></div>
+            <span className={cn("rounded-full border px-2 py-1 text-[11px] font-semibold", stockClasses[product.stockStatus])}>{formatQuantity(product.stock, product.unit)}</span>
+          </div>
+          <p className="line-clamp-2 font-semibold leading-snug">{product.name}</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{product.brand || product.categoryName}{product.sku ? ` · ${product.sku}` : ""}</p>
+          <div className="mt-3 flex items-end justify-between gap-2"><span className="text-base font-bold text-primary">{formatMoney(product.price)}</span><Plus className="size-5 text-muted-foreground group-hover:text-primary" /></div>
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="pb-24 md:pb-4">
+      {scannerOpen ? <CameraScanner products={products} onClose={() => setScannerOpen(false)} onFound={(product) => { addProduct(product); setScannerOpen(false); setTab("cart"); }} /> : null}
+
+      {state.receipt ? (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 shadow-sm">
+          <div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 size-6" /><div><p className="font-bold">Продажа оформлена</p><p className="text-sm">{state.receipt.receiptNumber} · {formatMoney(state.receipt.total)} · {state.receipt.sellerName}</p></div></div>
+        </div>
+      ) : state.message ? <p className={cn("mb-4 rounded-xl px-4 py-3 text-sm", state.ok ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-700")}>{state.message}</p> : null}
+
+      {(tab === "sale" || tab === "products") ? (
+        <div className="space-y-4">
+          <div className="sticky top-0 z-20 space-y-3 bg-background/95 pb-2 pt-1 backdrop-blur">
+            <Button type="button" onClick={() => setScannerOpen(true)} className="h-16 w-full rounded-2xl bg-slate-900 text-lg shadow-lg hover:bg-slate-800"><Camera className="size-6" /> Сканировать штрих‑код</Button>
+            <div className="relative"><Search className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Название, артикул, бренд, характеристика" className="h-14 rounded-2xl bg-card pl-12 text-base" /></div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <Button type="button" size="sm" variant={category === "all" ? "default" : "outline"} onClick={() => setCategory("all")} className="shrink-0">Все</Button>
+              {categories.map(([slug, name]) => <Button key={slug} type="button" size="sm" variant={category === slug ? "default" : "outline"} onClick={() => setCategory(slug)} className="shrink-0">{name}</Button>)}
             </div>
           </div>
+          {productGrid}
         </div>
+      ) : null}
 
-        <div className="grid gap-3 md:grid-cols-2">
-          {visibleProducts.map((product) => (
-            <button
-              key={product.id}
-              type="button"
-              onClick={() => selectProduct(product)}
-              className={cn(
-                "min-h-28 rounded-lg border bg-card p-4 text-left shadow-sm transition hover:border-primary hover:shadow-soft",
-                selectedId === product.id && "border-primary ring-2 ring-primary/20",
-              )}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-1">
-                  <p className="text-base font-semibold leading-snug">
-                    {product.name}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {product.categoryName}
-                  </p>
-                </div>
-                <span
-                  className={cn(
-                    "inline-flex rounded-md border px-2 py-1 text-xs font-semibold",
-                    statusClasses[product.stockStatus],
-                  )}
-                >
-                  {stockLabels[product.stockStatus]}
-                </span>
-              </div>
-              <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                <span className="font-semibold text-foreground">
-                  {formatMoney(product.price)} / {product.unit}
-                </span>
-                {product.barcode ? (
-                  <span className="inline-flex items-center gap-1">
-                    <Barcode className="size-4" />
-                    {product.barcode}
-                  </span>
-                ) : null}
-              </div>
-            </button>
-          ))}
+      {tab === "cart" ? (
+        <div className="mx-auto max-w-3xl space-y-4">
+          <div><h2 className="text-2xl font-bold">Корзина</h2><p className="text-sm text-muted-foreground">{itemCount} товаров</p></div>
+          {detailedCart.length ? detailedCart.map(({ product, quantity }) => (
+            <Card key={product.id}><CardContent className="flex items-center gap-3 p-4"><div className="min-w-0 flex-1"><p className="font-semibold">{product.name}</p><p className="text-sm text-muted-foreground">{formatMoney(product.price)} / {product.unit}</p></div><div className="flex items-center gap-1 rounded-xl border p-1"><Button type="button" size="icon" variant="ghost" onClick={() => changeQuantity(product, quantity - 1)}><Minus /></Button><span className="w-9 text-center font-bold">{quantity}</span><Button type="button" size="icon" variant="ghost" onClick={() => changeQuantity(product, quantity + 1)}><Plus /></Button></div><p className="w-24 text-right font-bold">{formatMoney(product.price * quantity)}</p></CardContent></Card>
+          )) : <div className="rounded-2xl border border-dashed p-10 text-center text-muted-foreground"><ShoppingCart className="mx-auto mb-3 size-10" />Корзина пуста</div>}
+
+          <form action={formAction} className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
+            <input type="hidden" name="items" value={JSON.stringify(cart)} />
+            <div><Label>Способ оплаты</Label><div className="mt-2 grid grid-cols-2 gap-2">{Object.values(PaymentMethod).map((method) => <Button key={method} type="button" variant={paymentMethod === method ? "default" : "outline"} onClick={() => setPaymentMethod(method)}>{paymentLabels[method]}</Button>)}</div><input type="hidden" name="paymentMethod" value={paymentMethod} /></div>
+            <div className="grid gap-4 sm:grid-cols-2"><div><Label htmlFor="discount">Скидка, % (до {employee.maxDiscountPercent}%)</Label><Input id="discount" name="discountPercent" inputMode="decimal" value={discount} onChange={(event) => setDiscount(event.target.value)} className="mt-2 h-12" /></div><div><Label htmlFor="note">Комментарий</Label><Input id="note" name="note" placeholder="Необязательно" className="mt-2 h-12" /></div></div>
+            <div className="space-y-2 border-t pt-4 text-sm"><div className="flex justify-between"><span>Подытог</span><span>{formatMoney(subtotal)}</span></div><div className="flex justify-between text-muted-foreground"><span>Скидка {discountNumber}%</span><span>− {formatMoney(subtotal - total)}</span></div><div className="flex justify-between text-xl font-bold"><span>Итого</span><span>{formatMoney(total)}</span></div></div>
+            <div className="grid grid-cols-2 gap-2"><Button type="button" variant="outline" disabled={!cart.length || isPending} onClick={holdCurrent} className="h-12"><Clock3 /> Отложить</Button><Button type="button" variant="ghost" disabled={!cart.length} onClick={() => setCart([])} className="h-12 text-destructive"><X /> Очистить</Button></div>
+            <CheckoutButton disabled={!cart.length} />
+          </form>
         </div>
-      </section>
+      ) : null}
 
-      <aside className="space-y-4">
-        <Card className="sticky top-4">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle>{mode === "sale" ? "Записать продажу" : "Записать закупку"}</CardTitle>
-              <Badge variant={mode === "sale" ? "success" : "warning"}>
-                {mode === "sale" ? "Касса" : "Приход"}
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {selectedProduct ? (
-              <div className="rounded-md border border-border bg-muted/40 p-4">
-                <p className="font-semibold">{selectedProduct.name}</p>
-                <div className="mt-2 flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{formatMoney(selectedProduct.price)} / {selectedProduct.unit}</span>
-                  <span
-                    className={cn(
-                      "rounded-md border px-2 py-1 text-xs font-medium",
-                      statusClasses[selectedProduct.stockStatus],
-                    )}
-                  >
-                    {stockLabels[selectedProduct.stockStatus]}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                Выберите товар
-              </div>
-            )}
+      {tab === "held" ? (
+        <div className="mx-auto max-w-3xl space-y-4"><div><h2 className="text-2xl font-bold">Отложенные чеки</h2><p className="text-sm text-muted-foreground">Можно вернуть чек в корзину</p></div>{heldReceipts.length ? heldReceipts.map((receipt) => <Card key={receipt.id}><CardContent className="flex items-center gap-3 p-4"><Clock3 className="size-6 text-amber-600" /><div className="min-w-0 flex-1"><p className="font-semibold">{receipt.name}</p><p className="text-sm text-muted-foreground">{receipt.items.length} позиций · {new Date(receipt.createdAt).toLocaleString("ru-RU")}</p></div><Button type="button" onClick={() => { setCart(receipt.items); setDiscount(String(receipt.discountPercent)); setPaymentMethod(receipt.paymentMethod); startTransition(async () => { await deleteHeldReceiptAction(receipt.id); }); setTab("cart"); }}>Вернуть</Button></CardContent></Card>) : <div className="rounded-2xl border border-dashed p-10 text-center text-muted-foreground">Отложенных чеков нет</div>}</div>
+      ) : null}
 
-            {mode === "sale" ? (
-              <form action={saleAction} className="space-y-4">
-                <input type="hidden" name="productId" value={selectedProduct?.id ?? ""} />
-                <div className="space-y-2">
-                  <Label htmlFor="sale-quantity">Количество</Label>
-                  <Input
-                    id="sale-quantity"
-                    name="quantity"
-                    inputMode="decimal"
-                    value={saleQuantity}
-                    onChange={(event) => setSaleQuantity(event.target.value)}
-                    className="h-12 text-lg"
-                  />
-                  <div className="grid grid-cols-4 gap-2">
-                    {["1", "2", "5", "10"].map((value) => (
-                      <Button
-                        key={value}
-                        type="button"
-                        variant="outline"
-                        onClick={() => setSaleQuantity(value)}
-                      >
-                        {value}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="sale-note">Комментарий</Label>
-                  <Textarea id="sale-note" name="note" rows={2} />
-                </div>
-                {saleState.message ? (
-                  <p
-                    className={cn(
-                      "rounded-md px-3 py-2 text-sm",
-                      saleState.ok
-                        ? "bg-emerald-50 text-emerald-700"
-                        : "bg-rose-50 text-rose-700",
-                    )}
-                  >
-                    {saleState.message}
-                  </p>
-                ) : null}
-                <SubmitButton disabled={!selectedProduct}>
-                  <ReceiptText />
-                  Записать продажу
-                </SubmitButton>
-              </form>
-            ) : (
-              <form action={purchaseAction} className="space-y-4">
-                <input type="hidden" name="productId" value={selectedProduct?.id ?? ""} />
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="purchase-quantity">Количество</Label>
-                    <Input
-                      id="purchase-quantity"
-                      name="quantity"
-                      inputMode="decimal"
-                      value={purchaseQuantity}
-                      onChange={(event) => setPurchaseQuantity(event.target.value)}
-                      className="h-12 text-lg"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="purchase-cost">Цена закупки</Label>
-                    <Input
-                      id="purchase-cost"
-                      name="unitCost"
-                      inputMode="decimal"
-                      value={purchaseCost}
-                      onChange={(event) => setPurchaseCost(event.target.value)}
-                      className="h-12 text-lg"
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="purchase-note">Комментарий</Label>
-                  <Textarea id="purchase-note" name="note" rows={2} />
-                </div>
-                {purchaseState.message ? (
-                  <p
-                    className={cn(
-                      "rounded-md px-3 py-2 text-sm",
-                      purchaseState.ok
-                        ? "bg-emerald-50 text-emerald-700"
-                        : "bg-rose-50 text-rose-700",
-                    )}
-                  >
-                    {purchaseState.message}
-                  </p>
-                ) : null}
-                <SubmitButton disabled={!selectedProduct}>
-                  <PackagePlus />
-                  Записать закупку
-                </SubmitButton>
-              </form>
-            )}
-          </CardContent>
-        </Card>
+      {tab === "profile" ? (
+        <div className="mx-auto max-w-xl space-y-4"><Card><CardHeader><CardTitle className="flex items-center gap-2"><UserRound /> {employee.name}</CardTitle></CardHeader><CardContent className="space-y-3"><p className="text-sm text-muted-foreground">Максимальная скидка: {employee.maxDiscountPercent}%</p><Button asChild variant="outline" className="w-full"><Link href="/cash/logout"><LogOut /> Выйти</Link></Button></CardContent></Card><Card><CardHeader><CardTitle className="flex items-center gap-2"><RotateCcw /> Запросить возврат</CardTitle></CardHeader><CardContent><form action={requestReturnAction} className="space-y-3"><Input name="receiptNumber" placeholder="Номер чека" required /><Textarea name="reason" placeholder="Причина возврата" required /><Button variant="outline" className="w-full">Отправить администратору</Button></form></CardContent></Card></div>
+      ) : null}
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <Clock3 className="size-5 text-primary" />
-              Последние операции
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {history.length ? (
-              history.map((operation) => (
-                <div
-                  key={`${operation.type}-${operation.id}`}
-                  className="rounded-md border border-border p-3"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="font-medium">
-                      {operation.type === "sale" ? "Продажа" : "Закупка"}
-                    </p>
-                    <span className="text-sm font-semibold">
-                      {formatMoney(operation.total)}
-                    </span>
-                  </div>
-                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                    {operation.details}
-                  </p>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {formatDate(operation.createdAt)}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <div className="flex items-center gap-3 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                <Boxes className="size-5" />
-                Операций пока нет
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </aside>
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t bg-card/95 px-2 pb-[max(.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_30px_rgba(15,23,42,.08)] backdrop-blur md:sticky md:bottom-3 md:mx-auto md:mt-8 md:max-w-3xl md:rounded-2xl md:border">
+        <div className="grid grid-cols-5 gap-1">
+          {([
+            ["sale", "Продажа", Barcode],
+            ["products", "Товары", Boxes],
+            ["cart", `Корзина${itemCount ? ` ${itemCount}` : ""}`, ShoppingCart],
+            ["held", "Отложено", ReceiptText],
+            ["profile", "Профиль", UserRound],
+          ] as const).map(([value, label, Icon]) => <button key={value} type="button" onClick={() => setTab(value)} className={cn("flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium", tab === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}><Icon className="size-5" /><span className="truncate">{label}</span></button>)}
+        </div>
+      </nav>
     </div>
   );
 }
