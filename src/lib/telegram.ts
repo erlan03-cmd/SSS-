@@ -1,5 +1,5 @@
 import { PaymentMethod, Prisma, SaleStatus } from "@prisma/client";
-import { formatMoney, formatQuantity } from "@/lib/format";
+import { formatDate, formatMoney, formatQuantity } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
 const BISHKEK_OFFSET_MS = 6 * 60 * 60 * 1000;
@@ -62,7 +62,7 @@ async function telegramRequest<T>(method: string, payload: object) {
 
 export async function sendTelegramMessage(
   text: string,
-  options: { chatId?: string; silent?: boolean } = {},
+  options: { chatId?: string; silent?: boolean; menu?: boolean } = {},
 ) {
   const chatId = options.chatId || telegramChatId();
   if (!telegramToken() || !chatId) return false;
@@ -72,6 +72,18 @@ export async function sendTelegramMessage(
     parse_mode: "HTML",
     disable_web_page_preview: true,
     disable_notification: options.silent ?? false,
+    ...(options.menu
+      ? {
+          reply_markup: {
+            keyboard: [
+              [{ text: "/report" }, { text: "/last" }, { text: "/top" }],
+              [{ text: "/stock" }, { text: "/shifts" }, { text: "/help" }],
+            ],
+            resize_keyboard: true,
+            is_persistent: true,
+          },
+        }
+      : {}),
   });
   return true;
 }
@@ -180,6 +192,104 @@ export async function buildOpenShiftsTelegramReport() {
       return `• ${escapeTelegramHtml(shift.employee.name)}: ${shift.sales.length} чек., в кассе ожидается <b>${escapeTelegramHtml(formatMoney(shift.openingCash.plus(cashSales)))}</b>`;
     }),
   ].join("\n");
+}
+
+export async function buildLastSalesTelegramReport() {
+  const sales = await prisma.sale.findMany({
+    where: { status: { in: countedStatuses } },
+    take: 7,
+    orderBy: { createdAt: "desc" },
+    include: {
+      employee: true,
+      items: { include: { product: true } },
+    },
+  });
+  if (!sales.length) return "🧾 <b>Продаж пока нет</b>";
+  return [
+    "🧾 <b>Последние продажи</b>",
+    "",
+    ...sales.map((sale) => {
+      const itemNames = sale.items
+        .slice(0, 3)
+        .map((item) => escapeTelegramHtml(item.product.name))
+        .join(", ");
+      const extra = sale.items.length > 3 ? ` + ещё ${sale.items.length - 3}` : "";
+      return [
+        `<b>${escapeTelegramHtml(sale.receiptNumber || "Продажа")}</b> · ${escapeTelegramHtml(formatMoney(sale.total))}`,
+        `${escapeTelegramHtml(formatDate(sale.createdAt))} · ${escapeTelegramHtml(sale.employee?.name || "Без кассира")}`,
+        `${itemNames}${extra}`,
+      ].join("\n");
+    }),
+  ].join("\n\n");
+}
+
+export async function buildTopProductsTelegramReport() {
+  const day = bishkekDay();
+  const grouped = await prisma.saleItem.groupBy({
+    by: ["productId"],
+    where: {
+      sale: { createdAt: { gte: day.start }, status: { in: countedStatuses } },
+    },
+    _sum: { quantity: true, total: true },
+    orderBy: { _sum: { total: "desc" } },
+    take: 10,
+  });
+  if (!grouped.length) return "🏆 <b>Сегодня продаж пока нет</b>";
+  const products = await prisma.product.findMany({
+    where: { id: { in: grouped.map((row) => row.productId) } },
+    select: { id: true, name: true, unit: true },
+  });
+  const names = new Map(products.map((product) => [product.id, product]));
+  return [
+    `🏆 <b>Топ товаров за ${day.key}</b>`,
+    "",
+    ...grouped.map((row, index) => {
+      const product = names.get(row.productId);
+      return `${index + 1}. ${escapeTelegramHtml(product?.name || "Товар удалён")} — <b>${escapeTelegramHtml(formatMoney(row._sum.total ?? 0))}</b> (${escapeTelegramHtml(formatQuantity(row._sum.quantity ?? 0, product?.unit))})`;
+    }),
+  ].join("\n");
+}
+
+export async function buildProductSearchTelegramReport(query: string) {
+  const normalized = query.trim();
+  if (normalized.length < 2) {
+    return [
+      "🔎 <b>Поиск товара</b>",
+      "Введите команду и название, артикул или штрих‑код.",
+      "Пример: <code>/product лампа</code>",
+    ].join("\n");
+  }
+  const products = await prisma.product.findMany({
+    where: {
+      active: true,
+      OR: [
+        { name: { contains: normalized, mode: "insensitive" } },
+        { sku: { contains: normalized, mode: "insensitive" } },
+        { barcode: normalized },
+        { brand: { contains: normalized, mode: "insensitive" } },
+      ],
+    },
+    orderBy: { name: "asc" },
+    take: 10,
+  });
+  if (!products.length) {
+    return `🔎 По запросу <b>${escapeTelegramHtml(normalized)}</b> ничего не найдено`;
+  }
+  return [
+    `🔎 <b>Найдено: ${products.length}</b>`,
+    "",
+    ...products.map((product) => {
+      const code = product.barcode || product.sku || "без кода";
+      const location = [product.warehouse, product.rack, product.shelf]
+        .filter(Boolean)
+        .join(" · ");
+      return [
+        `<b>${escapeTelegramHtml(product.name)}</b>`,
+        `${escapeTelegramHtml(code)} · ${escapeTelegramHtml(formatMoney(product.price))}`,
+        `Остаток: <b>${escapeTelegramHtml(formatQuantity(product.stock, product.unit))}</b>${location ? ` · ${escapeTelegramHtml(location)}` : ""}`,
+      ].join("\n");
+    }),
+  ].join("\n\n");
 }
 
 export async function notifyLowStockAfterSale(saleId: string) {
