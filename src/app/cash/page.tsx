@@ -11,11 +11,13 @@ import { getCashProducts } from "@/lib/data";
 import { requireEmployee } from "@/lib/employee-auth";
 import { toNumber } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { maybeSendDailyTelegramReport } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
 export default async function CashPage() {
   const employee = await requireEmployee();
+  await maybeSendDailyTelegramReport();
   const shift = await getOpenShiftSummary(employee.id);
 
   if (!shift) {
