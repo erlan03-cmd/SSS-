@@ -48,7 +48,9 @@ export async function checkoutSale(input: {
 
   return prisma.$transaction(async (tx) => {
     const employee = await tx.employee.findUnique({ where: { id: input.employeeId } });
-    if (!employee?.active) throw new Error("Аккаунт продавца отключён");
+    if (!employee?.active || employee.deletedAt) {
+      throw new Error("Аккаунт продавца отключён");
+    }
 
     const discount = new Prisma.Decimal(input.discountPercent || 0);
     if (discount.lessThan(0) || discount.greaterThan(employee.maxDiscountPercent)) {
