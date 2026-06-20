@@ -123,7 +123,11 @@ export async function openCashShift(input: {
         });
         return shift;
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 30_000,
+      },
     );
   } catch (error) {
     if (
@@ -255,7 +259,11 @@ export async function closeCashShift(input: {
         closedAt,
       };
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 10_000,
+      timeout: 30_000,
+    },
   );
 }
 
@@ -335,6 +343,10 @@ export async function recordCashMovement(input: {
       });
       return movement;
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 10_000,
+      timeout: 30_000,
+    },
   );
 }

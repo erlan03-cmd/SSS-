@@ -209,7 +209,11 @@ export async function checkoutSale(input: {
         total: item.total.toNumber(),
       })),
     };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    maxWait: 10_000,
+    timeout: 30_000,
+  });
 }
 
 export async function recordPurchase(input: {
