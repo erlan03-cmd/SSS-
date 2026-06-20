@@ -1,4 +1,4 @@
-import { CashShiftStatus, PaymentMethod } from "@prisma/client";
+import { CashMovementType, CashShiftStatus, PaymentMethod } from "@prisma/client";
 import { CircleDollarSign } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,15 +23,17 @@ export default async function CashShiftsPage() {
       employee: true,
       sales: {
         where: { status: { in: ["COMPLETED", "RETURN_REQUESTED"] } },
-        select: { total: true, paymentMethod: true },
+        select: { total: true, payments: true },
       },
+      cashMovements: true,
     },
   });
 
   const rows = shifts.map((shift) => {
     const liveCashSales = shift.sales
-      .filter((sale) => sale.paymentMethod === PaymentMethod.CASH)
-      .reduce((sum, sale) => sum + sale.total.toNumber(), 0);
+      .flatMap((sale) => sale.payments)
+      .filter((payment) => payment.method === PaymentMethod.CASH)
+      .reduce((sum, payment) => sum + payment.amount.toNumber(), 0);
     const liveTotalSales = shift.sales.reduce(
       (sum, sale) => sum + sale.total.toNumber(),
       0,
@@ -40,8 +42,21 @@ export default async function CashShiftsPage() {
     const cashSales = isOpen
       ? liveCashSales
       : (shift.cashSales?.toNumber() ?? 0);
+    const movementAmount = (type: CashMovementType) =>
+      shift.cashMovements
+        .filter((movement) => movement.type === type)
+        .reduce((sum, movement) => sum + movement.amount.toNumber(), 0);
+    const cashIn = isOpen
+      ? movementAmount(CashMovementType.CASH_IN)
+      : (shift.cashIn?.toNumber() ?? 0);
+    const cashOut = isOpen
+      ? movementAmount(CashMovementType.CASH_OUT)
+      : (shift.cashOut?.toNumber() ?? 0);
+    const expenses = isOpen
+      ? movementAmount(CashMovementType.EXPENSE)
+      : (shift.expenses?.toNumber() ?? 0);
     const expectedCash = isOpen
-      ? shift.openingCash.toNumber() + cashSales
+      ? shift.openingCash.toNumber() + cashSales + cashIn - cashOut - expenses
       : (shift.expectedCash?.toNumber() ?? 0);
     return {
       ...shift,
@@ -50,6 +65,9 @@ export default async function CashShiftsPage() {
       expectedCash,
       totalSales: liveTotalSales,
       difference: shift.cashDifference?.toNumber() ?? null,
+      cashIn,
+      cashOut,
+      expenses,
     };
   });
 
@@ -108,6 +126,7 @@ export default async function CashShiftsPage() {
                 <TableHead className="text-right">Продажи</TableHead>
                 <TableHead className="text-right">Размен</TableHead>
                 <TableHead className="text-right">Наличные продажи</TableHead>
+                <TableHead className="text-right">Операции</TableHead>
                 <TableHead className="text-right">Ожидалось</TableHead>
                 <TableHead className="text-right">Фактически</TableHead>
                 <TableHead className="text-right">Разница</TableHead>
@@ -136,6 +155,10 @@ export default async function CashShiftsPage() {
                   </TableCell>
                   <TableCell className="text-right">{formatMoney(shift.openingCash)}</TableCell>
                   <TableCell className="text-right">{formatMoney(shift.cashSales)}</TableCell>
+                  <TableCell className="text-right text-xs">
+                    <p className="text-emerald-700">+ {formatMoney(shift.cashIn)}</p>
+                    <p className="text-rose-700">− {formatMoney(shift.cashOut + shift.expenses)}</p>
+                  </TableCell>
                   <TableCell className="text-right">{formatMoney(shift.expectedCash)}</TableCell>
                   <TableCell className="text-right">
                     {shift.closingCash ? formatMoney(shift.closingCash) : "—"}

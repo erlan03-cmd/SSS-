@@ -1,9 +1,13 @@
 "use server";
 
-import { PaymentMethod, Prisma } from "@prisma/client";
+import { CashMovementType, PaymentMethod, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { closeCashShift, openCashShift } from "@/lib/cash-shift";
+import {
+  closeCashShift,
+  openCashShift,
+  recordCashMovement,
+} from "@/lib/cash-shift";
 import { requireEmployee } from "@/lib/employee-auth";
 import {
   actionError,
@@ -15,12 +19,34 @@ import {
 } from "@/lib/inventory";
 import { prisma } from "@/lib/prisma";
 import {
+  notifyCashMovement,
   notifyLowStockAfterSale,
   notifyReturnRequested,
   notifyShiftClosed,
 } from "@/lib/telegram";
 
 type CartItemInput = { productId: string; quantity: number };
+
+function parsePayments(raw: FormDataEntryValue | null) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw)) as Array<{
+      method: PaymentMethod;
+      amount: number;
+    }>;
+    if (!Array.isArray(parsed)) throw new Error();
+    return parsed.map((payment) => {
+      const method = String(payment.method) as PaymentMethod;
+      const amount = Number(payment.amount);
+      if (!Object.values(PaymentMethod).includes(method) || !Number.isFinite(amount)) {
+        throw new Error();
+      }
+      return { method, amount };
+    });
+  } catch {
+    throw new Error("Не удалось прочитать распределение оплаты");
+  }
+}
 
 export async function openShiftAction(formData: FormData) {
   const employee = await requireEmployee();
@@ -66,6 +92,30 @@ export async function closeShiftAction(formData: FormData) {
   redirect("/cash?shift=closed");
 }
 
+export async function cashMovementAction(formData: FormData) {
+  const employee = await requireEmployee();
+  const rawType = stringFromForm(formData, "type") as CashMovementType;
+  if (!Object.values(CashMovementType).includes(rawType)) {
+    throw new Error("Некорректный тип кассовой операции");
+  }
+  const movement = await recordCashMovement({
+    employeeId: employee.id,
+    employeeName: employee.name,
+    type: rawType,
+    amount: decimalFromForm(formData, "amount", "Сумма"),
+    note: stringFromForm(formData, "note"),
+  });
+  await notifyCashMovement({
+    type: movement.type,
+    amount: movement.amount,
+    note: movement.note,
+    employeeName: employee.name,
+  });
+  revalidatePath("/cash");
+  revalidatePath("/admin/shifts");
+  redirect("/cash?cash=recorded");
+}
+
 function parseCart(raw: FormDataEntryValue | null): CartItemInput[] {
   try {
     const parsed = JSON.parse(String(raw ?? "[]")) as CartItemInput[];
@@ -86,12 +136,14 @@ export async function checkoutAction(
     const discountPercent = Number(String(formData.get("discountPercent") ?? "0").replace(",", "."));
     const paymentValue = String(formData.get("paymentMethod") ?? "CASH") as PaymentMethod;
     const paymentMethod = Object.values(PaymentMethod).includes(paymentValue) ? paymentValue : PaymentMethod.CASH;
+    const payments = parsePayments(formData.get("payments"));
     const receipt = await checkoutSale({
       employeeId: employee.id,
       sellerName: employee.name,
       items,
       discountPercent,
       paymentMethod,
+      payments,
       note: String(formData.get("note") ?? "").trim(),
     });
     await notifyLowStockAfterSale(receipt.id);

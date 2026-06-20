@@ -7,6 +7,7 @@ export type SaleReceipt = {
   total: number;
   sellerName: string;
   paymentMethod: PaymentMethod;
+  payments: Array<{ method: PaymentMethod; amount: number }>;
   createdAt: string;
   items: Array<{
     name: string;
@@ -50,6 +51,7 @@ export async function checkoutSale(input: {
   items: Array<{ productId: string; quantity: number }>;
   discountPercent: number;
   paymentMethod: PaymentMethod;
+  payments?: Array<{ method: PaymentMethod; amount: number }>;
   note?: string;
 }) {
   if (!input.items.length) throw new Error("Корзина пуста");
@@ -93,6 +95,32 @@ export async function checkoutSale(input: {
 
     const discountAmount = subtotal.mul(discount).div(100).toDecimalPlaces(2);
     const total = prepared.reduce((sum, item) => sum.plus(item.total), new Prisma.Decimal(0));
+    const requestedPayments = (input.payments?.length
+      ? input.payments
+      : [{ method: input.paymentMethod, amount: total.toNumber() }]
+    ).map((payment) => ({
+      method: payment.method,
+      amount: new Prisma.Decimal(payment.amount).toDecimalPlaces(2),
+    }));
+    if (
+      requestedPayments.some((payment) => !payment.amount.isPositive()) ||
+      new Set(requestedPayments.map((payment) => payment.method)).size !==
+        requestedPayments.length
+    ) {
+      throw new Error("Некорректное распределение оплаты");
+    }
+    const paidTotal = requestedPayments.reduce(
+      (sum, payment) => sum.plus(payment.amount),
+      new Prisma.Decimal(0),
+    );
+    if (!paidTotal.equals(total.toDecimalPlaces(2))) {
+      throw new Error(
+        `Сумма оплаты ${paidTotal.toFixed(2)} не совпадает с итогом ${total.toFixed(2)}`,
+      );
+    }
+    const primaryPayment =
+      requestedPayments.find((payment) => payment.method === PaymentMethod.CASH) ??
+      requestedPayments[0];
     const number = receiptNumber();
     const sale = await tx.sale.create({
       data: {
@@ -101,7 +129,7 @@ export async function checkoutSale(input: {
         discountPercent: discount,
         discountAmount,
         total,
-        paymentMethod: input.paymentMethod,
+        paymentMethod: primaryPayment.method,
         note: input.note || null,
         employeeId: employee.id,
         shiftId: shift.id,
@@ -112,6 +140,12 @@ export async function checkoutSale(input: {
             unitPrice: item.unitPrice,
             unitCost: item.product.cost,
             total: item.total,
+          })),
+        },
+        payments: {
+          create: requestedPayments.map((payment) => ({
+            method: payment.method,
+            amount: payment.amount,
           })),
         },
       },
@@ -145,7 +179,15 @@ export async function checkoutSale(input: {
         entityId: sale.id,
         actorName: input.sellerName,
         employeeId: employee.id,
-        details: { receiptNumber: number, total: total.toString(), discount: discount.toString(), paymentMethod: input.paymentMethod },
+        details: {
+          receiptNumber: number,
+          total: total.toString(),
+          discount: discount.toString(),
+          payments: requestedPayments.map((payment) => ({
+            method: payment.method,
+            amount: payment.amount.toString(),
+          })),
+        },
       },
     });
 
@@ -154,7 +196,11 @@ export async function checkoutSale(input: {
       receiptNumber: number,
       total: total.toNumber(),
       sellerName: input.sellerName,
-      paymentMethod: input.paymentMethod,
+      paymentMethod: primaryPayment.method,
+      payments: requestedPayments.map((payment) => ({
+        method: payment.method,
+        amount: payment.amount.toNumber(),
+      })),
       createdAt: sale.createdAt.toISOString(),
       items: prepared.map((item) => ({
         name: item.product.name,

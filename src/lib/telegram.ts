@@ -1,4 +1,9 @@
-import { PaymentMethod, Prisma, SaleStatus } from "@prisma/client";
+import {
+  CashMovementType,
+  PaymentMethod,
+  Prisma,
+  SaleStatus,
+} from "@prisma/client";
 import { formatDate, formatMoney, formatQuantity } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
@@ -116,26 +121,36 @@ function bishkekDay(date = new Date()) {
 
 export async function buildDailyTelegramReport() {
   const day = bishkekDay();
-  const [sales, payments, lowStock, pendingReturns, openShifts] =
+  const [sales, payments, lowStock, pendingReturns, openShifts, cashMovements] =
     await Promise.all([
       prisma.sale.aggregate({
         where: { createdAt: { gte: day.start }, status: { in: countedStatuses } },
         _sum: { total: true },
         _count: { _all: true },
       }),
-      prisma.sale.groupBy({
-        by: ["paymentMethod"],
-        where: { createdAt: { gte: day.start }, status: { in: countedStatuses } },
-        _sum: { total: true },
+      prisma.salePayment.groupBy({
+        by: ["method"],
+        where: {
+          sale: { createdAt: { gte: day.start }, status: { in: countedStatuses } },
+        },
+        _sum: { amount: true },
       }),
       prisma.product.count({
         where: { active: true, stock: { lte: prisma.product.fields.minStock } },
       }),
       prisma.returnRequest.count({ where: { status: "PENDING" } }),
       prisma.cashShift.count({ where: { status: "OPEN" } }),
+      prisma.cashMovement.groupBy({
+        by: ["type"],
+        where: { createdAt: { gte: day.start } },
+        _sum: { amount: true },
+      }),
     ]);
   const byPayment = (method: PaymentMethod) =>
-    payments.find((item) => item.paymentMethod === method)?._sum.total ??
+    payments.find((item) => item.method === method)?._sum.amount ??
+    new Prisma.Decimal(0);
+  const movementTotal = (type: "CASH_IN" | "CASH_OUT" | "EXPENSE") =>
+    cashMovements.find((item) => item.type === type)?._sum.amount ??
     new Prisma.Decimal(0);
 
   return [
@@ -147,6 +162,9 @@ export async function buildDailyTelegramReport() {
     `💳 Карта: ${escapeTelegramHtml(formatMoney(byPayment(PaymentMethod.CARD)))}`,
     `📱 QR: ${escapeTelegramHtml(formatMoney(byPayment(PaymentMethod.QR)))}`,
     `🏦 Перевод: ${escapeTelegramHtml(formatMoney(byPayment(PaymentMethod.TRANSFER)))}`,
+    `➕ Внесено в кассу: ${escapeTelegramHtml(formatMoney(movementTotal("CASH_IN")))}`,
+    `➖ Изъято: ${escapeTelegramHtml(formatMoney(movementTotal("CASH_OUT")))}`,
+    `🧾 Расходы: ${escapeTelegramHtml(formatMoney(movementTotal("EXPENSE")))}`,
     "",
     `⚠️ Низкий остаток: <b>${lowStock}</b>`,
     `↩️ Возвраты на проверке: <b>${pendingReturns}</b>`,
@@ -178,8 +196,9 @@ export async function buildOpenShiftsTelegramReport() {
       employee: true,
       sales: {
         where: { status: { in: countedStatuses } },
-        select: { total: true, paymentMethod: true },
+        select: { total: true, payments: true },
       },
+      cashMovements: true,
     },
     orderBy: { openedAt: "asc" },
   });
@@ -189,9 +208,16 @@ export async function buildOpenShiftsTelegramReport() {
     "",
     ...shifts.map((shift) => {
       const cashSales = shift.sales
-        .filter((sale) => sale.paymentMethod === PaymentMethod.CASH)
-        .reduce((sum, sale) => sum.plus(sale.total), new Prisma.Decimal(0));
-      return `• ${escapeTelegramHtml(shift.employee.name)}: ${shift.sales.length} чек., в кассе ожидается <b>${escapeTelegramHtml(formatMoney(shift.openingCash.plus(cashSales)))}</b>`;
+        .flatMap((sale) => sale.payments)
+        .filter((payment) => payment.method === PaymentMethod.CASH)
+        .reduce((sum, payment) => sum.plus(payment.amount), new Prisma.Decimal(0));
+      const cashIn = shift.cashMovements
+        .filter((movement) => movement.type === "CASH_IN")
+        .reduce((sum, movement) => sum.plus(movement.amount), new Prisma.Decimal(0));
+      const cashOut = shift.cashMovements
+        .filter((movement) => movement.type !== "CASH_IN")
+        .reduce((sum, movement) => sum.plus(movement.amount), new Prisma.Decimal(0));
+      return `• ${escapeTelegramHtml(shift.employee.name)}: ${shift.sales.length} чек., в кассе ожидается <b>${escapeTelegramHtml(formatMoney(shift.openingCash.plus(cashSales).plus(cashIn).minus(cashOut)))}</b>`;
     }),
   ].join("\n");
 }
@@ -501,6 +527,28 @@ export async function notifyShiftClosed(input: {
       `Разница: <b>${escapeTelegramHtml(formatMoney(input.difference))}</b>`,
     ].join("\n"),
     { silent: !hasDifference },
+  );
+}
+
+export async function notifyCashMovement(input: {
+  type: CashMovementType;
+  amount: Prisma.Decimal;
+  note: string;
+  employeeName: string;
+}) {
+  const labels: Record<CashMovementType, string> = {
+    CASH_IN: "➕ Деньги внесены в кассу",
+    CASH_OUT: "➖ Деньги изъяты из кассы",
+    EXPENSE: "🧾 Расход из кассы",
+  };
+  return safelySend(
+    [
+      `<b>${labels[input.type]}</b>`,
+      `Сумма: <b>${escapeTelegramHtml(formatMoney(input.amount))}</b>`,
+      `Сотрудник: ${escapeTelegramHtml(input.employeeName)}`,
+      `Причина: ${escapeTelegramHtml(input.note)}`,
+    ].join("\n"),
+    { silent: input.type === CashMovementType.CASH_IN },
   );
 }
 

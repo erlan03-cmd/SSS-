@@ -101,7 +101,11 @@ export async function getRecentOperations(
     prisma.sale.findMany({
       take: limit,
       orderBy: { createdAt: "desc" },
-      include: { employee: true, items: { include: { product: true } } },
+      include: {
+        employee: true,
+        payments: true,
+        items: { include: { product: true } },
+      },
     }),
     prisma.purchase.findMany({
       take: limit,
@@ -149,7 +153,11 @@ export async function getDashboardData() {
     }),
     prisma.sale.findMany({
       where: { createdAt: { gte: todayStart }, status: SaleStatus.COMPLETED },
-      include: { employee: true, items: { include: { product: true } } },
+      include: {
+        employee: true,
+        payments: true,
+        items: { include: { product: true } },
+      },
       orderBy: { createdAt: "desc" },
     }),
     prisma.saleItem.findMany({
@@ -196,8 +204,11 @@ export async function getDashboardData() {
     QR: 0,
     TRANSFER: 0,
   };
-  for (const sale of todaySales)
-    paymentTotals[sale.paymentMethod] += toNumber(sale.total);
+  for (const sale of todaySales) {
+    for (const payment of sale.payments) {
+      paymentTotals[payment.method] += toNumber(payment.amount);
+    }
+  }
 
   const sellerMap = new Map<
     string,
