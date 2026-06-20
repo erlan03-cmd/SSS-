@@ -1,11 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import {
+  buildCashiersTelegramReport,
   buildDailyTelegramReport,
   buildLastSalesTelegramReport,
   buildLowStockTelegramReport,
   buildOpenShiftsTelegramReport,
+  buildOrdersTelegramReport,
+  buildPendingReturnsTelegramReport,
   buildProductSearchTelegramReport,
   buildTopProductsTelegramReport,
+  buildTodayProfitTelegramReport,
+  buildWeeklyTelegramReport,
   sendTelegramMessage,
   telegramChatId,
   telegramWebhookSecret,
@@ -26,9 +31,14 @@ const help = [
   "/report — отчёт за сегодня",
   "/last — последние продажи",
   "/top — топ товаров за сегодня",
+  "/profit — прибыль за сегодня",
+  "/week — финансовые итоги за 7 дней",
+  "/cashiers — продажи по кассирам",
   "/stock — товары с низким остатком",
   "/shifts — открытые кассовые смены",
   "/product запрос — найти товар",
+  "/returns — возвраты на проверке",
+  "/orders — товары к заказу",
   "/help — список команд",
 ].join("\n");
 
@@ -61,8 +71,13 @@ export async function POST(request: Request) {
   if (command === "/report") response = await buildDailyTelegramReport();
   if (command === "/last") response = await buildLastSalesTelegramReport();
   if (command === "/top") response = await buildTopProductsTelegramReport();
+  if (command === "/profit") response = await buildTodayProfitTelegramReport();
+  if (command === "/week") response = await buildWeeklyTelegramReport();
+  if (command === "/cashiers") response = await buildCashiersTelegramReport();
   if (command === "/stock") response = await buildLowStockTelegramReport();
   if (command === "/shifts") response = await buildOpenShiftsTelegramReport();
+  if (command === "/returns") response = await buildPendingReturnsTelegramReport();
+  if (command === "/orders") response = await buildOrdersTelegramReport();
   if (command === "/product") {
     response = await buildProductSearchTelegramReport(
       text.includes(" ") ? query : "",
