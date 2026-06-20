@@ -13,6 +13,7 @@ import {
   ShoppingBasket,
   Store,
   Users,
+  WalletCards,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/admin/warehouse", label: "Склад", icon: PackageCheck },
   { href: "/admin/orders", label: "Заказать", icon: ShoppingBasket },
   { href: "/admin/reports", label: "Отчёты", icon: FileBarChart },
+  { href: "/admin/shifts", label: "Смены", icon: WalletCards },
   { href: "/admin/employees", label: "Сотрудники", icon: Users },
   { href: "/admin/returns", label: "Возвраты", icon: RotateCcw },
   { href: "/admin/history", label: "История", icon: ClipboardList },

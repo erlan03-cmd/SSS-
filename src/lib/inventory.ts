@@ -6,6 +6,14 @@ export type SaleReceipt = {
   receiptNumber: string;
   total: number;
   sellerName: string;
+  paymentMethod: PaymentMethod;
+  createdAt: string;
+  items: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    total: number;
+  }>;
 };
 
 export type ActionState = {
@@ -51,6 +59,11 @@ export async function checkoutSale(input: {
     if (!employee?.active || employee.deletedAt) {
       throw new Error("Аккаунт продавца отключён");
     }
+    const shift = await tx.cashShift.findFirst({
+      where: { employeeId: employee.id, status: "OPEN" },
+      orderBy: { openedAt: "desc" },
+    });
+    if (!shift) throw new Error("Сначала откройте кассовую смену");
 
     const discount = new Prisma.Decimal(input.discountPercent || 0);
     if (discount.lessThan(0) || discount.greaterThan(employee.maxDiscountPercent)) {
@@ -91,6 +104,7 @@ export async function checkoutSale(input: {
         paymentMethod: input.paymentMethod,
         note: input.note || null,
         employeeId: employee.id,
+        shiftId: shift.id,
         items: {
           create: prepared.map((item) => ({
             productId: item.product.id,
@@ -135,7 +149,20 @@ export async function checkoutSale(input: {
       },
     });
 
-    return { id: sale.id, receiptNumber: number, total: total.toNumber(), sellerName: input.sellerName };
+    return {
+      id: sale.id,
+      receiptNumber: number,
+      total: total.toNumber(),
+      sellerName: input.sellerName,
+      paymentMethod: input.paymentMethod,
+      createdAt: sale.createdAt.toISOString(),
+      items: prepared.map((item) => ({
+        name: item.product.name,
+        quantity: item.quantity.toNumber(),
+        unitPrice: item.unitPrice.toNumber(),
+        total: item.total.toNumber(),
+      })),
+    };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 

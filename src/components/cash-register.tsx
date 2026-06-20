@@ -7,16 +7,19 @@ import {
   Boxes,
   Camera,
   CheckCircle2,
+  CircleDollarSign,
   Flashlight,
   FlashlightOff,
   Minus,
   Plus,
+  Printer,
   Clock3,
   LogOut,
   PackageSearch,
   ReceiptText,
   RotateCcw,
   Search,
+  Share2,
   ShoppingCart,
   UserRound,
   X,
@@ -34,6 +37,7 @@ import {
 import { useFormStatus } from "react-dom";
 import {
   checkoutAction,
+  closeShiftAction,
   deleteHeldReceiptAction,
   holdReceiptAction,
   requestReturnAction,
@@ -44,9 +48,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { findByBarcode } from "@/lib/barcode";
+import type { CashShiftSummary } from "@/lib/cash-shift";
 import type { CashProduct } from "@/lib/data";
 import { formatMoney, formatQuantity } from "@/lib/format";
-import { initialActionState } from "@/lib/inventory";
+import { initialActionState, type SaleReceipt } from "@/lib/inventory";
 import { cn } from "@/lib/utils";
 
 type CartItem = { productId: string; quantity: number };
@@ -63,6 +68,7 @@ type Props = {
   products: CashProduct[];
   employee: { name: string; maxDiscountPercent: number };
   heldReceipts: HeldReceipt[];
+  shift: CashShiftSummary;
 };
 
 type Tab = "sale" | "products" | "cart" | "held" | "profile";
@@ -79,6 +85,62 @@ const stockClasses = {
   low: "bg-amber-50 text-amber-700 border-amber-200",
   out: "bg-rose-50 text-rose-700 border-rose-200",
 };
+
+function escapeHtml(value: string) {
+  return value.replace(
+    /[&<>'"]/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "'": "&#39;",
+        '"': "&quot;",
+      })[character] ?? character,
+  );
+}
+
+function printReceipt(receipt: SaleReceipt) {
+  const popup = window.open("", "_blank", "width=420,height=720");
+  if (!popup) return;
+  const rows = receipt.items
+    .map(
+      (item) =>
+        `<tr><td>${escapeHtml(item.name)}<br><small>${item.quantity} × ${item.unitPrice.toFixed(2)}</small></td><td>${item.total.toFixed(2)}</td></tr>`,
+    )
+    .join("");
+  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(receipt.receiptNumber)}</title><style>body{font:14px Arial,sans-serif;width:72mm;margin:0 auto;padding:8mm 2mm;color:#111}h1{text-align:center;font-size:20px;margin:0}p{text-align:center;margin:5px 0}table{width:100%;border-collapse:collapse;margin:14px 0}td{padding:7px 0;border-bottom:1px dashed #aaa;vertical-align:top}td:last-child{text-align:right;font-weight:700}.total{font-size:20px;font-weight:700;display:flex;justify-content:space-between;border-top:2px solid #111;padding-top:10px}.muted{color:#555;font-size:12px}@media print{body{padding:0}}</style></head><body><h1>SSS+</h1><p>Товарный чек</p><p class="muted">${escapeHtml(receipt.receiptNumber)}<br>${new Date(receipt.createdAt).toLocaleString("ru-RU")}<br>Кассир: ${escapeHtml(receipt.sellerName)}</p><table>${rows}</table><div class="total"><span>ИТОГО</span><span>${receipt.total.toFixed(2)} сом</span></div><p class="muted">Оплата: ${escapeHtml(paymentLabels[receipt.paymentMethod])}</p><p>Спасибо за покупку!</p><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}<\/script></body></html>`);
+  popup.document.close();
+}
+
+async function shareReceipt(receipt: SaleReceipt) {
+  const lines = [
+    "SSS+ — товарный чек",
+    receipt.receiptNumber,
+    ...receipt.items.map(
+      (item) =>
+        `${item.name}: ${item.quantity} × ${item.unitPrice.toFixed(2)} = ${item.total.toFixed(2)} сом`,
+    ),
+    `Итого: ${receipt.total.toFixed(2)} сом`,
+    `Оплата: ${paymentLabels[receipt.paymentMethod]}`,
+    `Кассир: ${receipt.sellerName}`,
+  ];
+  const text = lines.join("\n");
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: receipt.receiptNumber, text });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      window.open(
+        `https://wa.me/?text=${encodeURIComponent(text)}`,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    }
+    return;
+  }
+  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
+}
 
 function CheckoutButton({ disabled }: { disabled: boolean }) {
   const { pending } = useFormStatus();
@@ -297,7 +359,7 @@ function CameraScanner({
   );
 }
 
-export function CashRegister({ products, employee, heldReceipts }: Props) {
+export function CashRegister({ products, employee, heldReceipts, shift }: Props) {
   const [tab, setTab] = useState<Tab>("sale");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
@@ -473,12 +535,30 @@ export function CashRegister({ products, employee, heldReceipts }: Props) {
         <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 shadow-sm">
           <div className="flex items-start gap-3">
             <CheckCircle2 className="mt-0.5 size-6" />
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="font-bold">Продажа оформлена</p>
               <p className="text-sm">
                 {state.receipt.receiptNumber} ·{" "}
                 {formatMoney(state.receipt.total)} · {state.receipt.sellerName}
               </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => printReceipt(state.receipt!)}
+                >
+                  <Printer /> Печать чека
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void shareReceipt(state.receipt!)}
+                >
+                  <Share2 /> Поделиться
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -723,6 +803,62 @@ export function CashRegister({ products, employee, heldReceipts }: Props) {
 
       {tab === "profile" ? (
         <div className="mx-auto max-w-xl space-y-4">
+          <Card className="border-emerald-200">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <CircleDollarSign /> Открытая смена
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                С {new Date(shift.openedAt).toLocaleString("ru-RU")}
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-xl bg-muted p-3">
+                  <p className="text-muted-foreground">Продаж</p>
+                  <p className="text-lg font-bold">{shift.saleCount}</p>
+                </div>
+                <div className="rounded-xl bg-muted p-3">
+                  <p className="text-muted-foreground">Всего</p>
+                  <p className="text-lg font-bold">{formatMoney(shift.totalSales)}</p>
+                </div>
+                <div className="rounded-xl bg-muted p-3">
+                  <p className="text-muted-foreground">Размен</p>
+                  <p className="font-semibold">{formatMoney(shift.openingCash)}</p>
+                </div>
+                <div className="rounded-xl bg-muted p-3">
+                  <p className="text-muted-foreground">Наличные продажи</p>
+                  <p className="font-semibold">{formatMoney(shift.cashSales)}</p>
+                </div>
+              </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-sm text-emerald-800">Ожидается наличных в кассе</p>
+                <p className="text-2xl font-bold text-emerald-900">
+                  {formatMoney(shift.expectedCash)}
+                </p>
+              </div>
+              <form action={closeShiftAction} className="space-y-3 border-t pt-4">
+                <div>
+                  <Label htmlFor="closingCash">Фактически пересчитано, сом</Label>
+                  <Input
+                    id="closingCash"
+                    name="closingCash"
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    defaultValue={shift.expectedCash.toFixed(2)}
+                    required
+                    className="mt-2 h-12"
+                  />
+                </div>
+                <Textarea name="note" placeholder="Комментарий к расхождению (необязательно)" />
+                <Button variant="destructive" className="h-12 w-full">
+                  Закрыть смену
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

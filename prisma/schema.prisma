@@ -48,6 +48,11 @@ enum ReorderStatus {
   RECEIVED
 }
 
+enum CashShiftStatus {
+  OPEN
+  CLOSED
+}
+
 model Category {
   id          String    @id @default(cuid())
   name        String
@@ -88,6 +93,7 @@ model Employee {
   approvedReturns    ReturnRequest[]   @relation("ReturnApprover")
   auditLogs          AuditLog[]
   heldReceipts       HeldReceipt[]
+  cashShifts         CashShift[]
   deletedAt          DateTime?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
@@ -168,6 +174,8 @@ model Sale {
   note            String?
   employeeId      String?
   employee        Employee?       @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  shiftId         String?
+  shift           CashShift?      @relation(fields: [shiftId], references: [id], onDelete: SetNull)
   items           SaleItem[]
   stockMovements  StockMovement[]
   returnRequests  ReturnRequest[]
@@ -175,8 +183,30 @@ model Sale {
   updatedAt       DateTime        @updatedAt
 
   @@index([employeeId])
+  @@index([shiftId])
   @@index([createdAt])
   @@index([status])
+}
+
+model CashShift {
+  id             String          @id @default(cuid())
+  status         CashShiftStatus @default(OPEN)
+  openingCash    Decimal         @default(0) @db.Decimal(12, 2)
+  closingCash    Decimal?        @db.Decimal(12, 2)
+  cashSales      Decimal?        @db.Decimal(12, 2)
+  expectedCash   Decimal?        @db.Decimal(12, 2)
+  cashDifference Decimal?        @db.Decimal(12, 2)
+  note           String?
+  employeeId     String
+  employee       Employee        @relation(fields: [employeeId], references: [id])
+  sales          Sale[]
+  openedAt       DateTime        @default(now())
+  closedAt       DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([employeeId, status])
+  @@index([openedAt])
 }
 
 model SaleItem {

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Edit3, Plus } from "lucide-react";
+import { Edit3, Plus, Printer } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,12 +33,19 @@ export default async function ProductsPage() {
             Всего позиций: {products.length}
           </p>
         </div>
-        <Button asChild>
-          <Link href="/admin/products/new">
-            <Plus />
-            Добавить товар
-          </Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link href="/admin/products/labels">
+              <Printer /> Печать ценников
+            </Link>
+          </Button>
+          <Button asChild>
+            <Link href="/admin/products/new">
+              <Plus />
+              Добавить товар
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <Card>
