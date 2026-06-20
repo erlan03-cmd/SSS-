@@ -1,8 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 import {
   buildDailyTelegramReport,
+  buildLastSalesTelegramReport,
   buildLowStockTelegramReport,
   buildOpenShiftsTelegramReport,
+  buildProductSearchTelegramReport,
+  buildTopProductsTelegramReport,
   sendTelegramMessage,
   telegramChatId,
   telegramWebhookSecret,
@@ -21,8 +24,11 @@ const help = [
   "🤖 <b>SSS+ помощник</b>",
   "",
   "/report — отчёт за сегодня",
+  "/last — последние продажи",
+  "/top — топ товаров за сегодня",
   "/stock — товары с низким остатком",
   "/shifts — открытые кассовые смены",
+  "/product запрос — найти товар",
   "/help — список команд",
 ].join("\n");
 
@@ -48,12 +54,21 @@ export async function POST(request: Request) {
     return Response.json({ ok: true });
   }
 
-  const command = message.text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
+  const text = message.text.trim();
+  const command = text.split(/\s+/)[0].split("@")[0].toLowerCase();
+  const query = text.slice(text.indexOf(" ") + 1).trim();
   let response = help;
   if (command === "/report") response = await buildDailyTelegramReport();
+  if (command === "/last") response = await buildLastSalesTelegramReport();
+  if (command === "/top") response = await buildTopProductsTelegramReport();
   if (command === "/stock") response = await buildLowStockTelegramReport();
   if (command === "/shifts") response = await buildOpenShiftsTelegramReport();
-  await sendTelegramMessage(response, { chatId });
+  if (command === "/product") {
+    response = await buildProductSearchTelegramReport(
+      text.includes(" ") ? query : "",
+    );
+  }
+  await sendTelegramMessage(response, { chatId, menu: true });
   return Response.json({ ok: true });
 }
 
