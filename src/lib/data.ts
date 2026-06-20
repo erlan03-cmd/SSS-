@@ -2,6 +2,29 @@ import { PaymentMethod, Prisma, SaleStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { toNumber } from "@/lib/format";
 
+const BISHKEK_OFFSET_MS = 6 * 60 * 60 * 1000;
+
+function bishkekDateParts(date = new Date()) {
+  const shifted = new Date(date.getTime() + BISHKEK_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    day: shifted.getUTCDate(),
+  };
+}
+
+export function startOfBishkekPeriod(days = 1) {
+  const { year, month, day } = bishkekDateParts();
+  return new Date(
+    Date.UTC(year, month, day - Math.max(days - 1, 0)) - BISHKEK_OFFSET_MS,
+  );
+}
+
+function startOfBishkekMonth() {
+  const { year, month } = bishkekDateParts();
+  return new Date(Date.UTC(year, month, 1) - BISHKEK_OFFSET_MS);
+}
+
 export type CashProduct = {
   id: string;
   name: string;
@@ -71,7 +94,9 @@ export async function getCashProducts(): Promise<CashProduct[]> {
   });
 }
 
-export async function getRecentOperations(limit = 10): Promise<OperationHistoryItem[]> {
+export async function getRecentOperations(
+  limit = 10,
+): Promise<OperationHistoryItem[]> {
   const [sales, purchases] = await Promise.all([
     prisma.sale.findMany({
       take: limit,
@@ -102,58 +127,102 @@ export async function getRecentOperations(limit = 10): Promise<OperationHistoryI
       createdAt: purchase.createdAt.toISOString(),
       total: toNumber(purchase.total),
       title: "Поступление",
-      details: purchase.items.map((item) => `${item.product.name} × ${toNumber(item.quantity)}`).join(", "),
+      details: purchase.items
+        .map((item) => `${item.product.name} × ${toNumber(item.quantity)}`)
+        .join(", "),
     })),
   ]
-    .sort((left, right) => +new Date(right.createdAt) - +new Date(left.createdAt))
+    .sort(
+      (left, right) => +new Date(right.createdAt) - +new Date(left.createdAt),
+    )
     .slice(0, limit);
 }
 
 export async function getDashboardData() {
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const todayStart = startOfBishkekPeriod(1);
+  const monthStart = startOfBishkekMonth();
 
   const [products, todaySales, monthItems, pendingReturns] = await Promise.all([
-    prisma.product.findMany({ include: { category: true, supplier: true }, orderBy: { name: "asc" } }),
+    prisma.product.findMany({
+      include: { category: true, supplier: true },
+      orderBy: { name: "asc" },
+    }),
     prisma.sale.findMany({
       where: { createdAt: { gte: todayStart }, status: SaleStatus.COMPLETED },
       include: { employee: true, items: { include: { product: true } } },
       orderBy: { createdAt: "desc" },
     }),
     prisma.saleItem.findMany({
-      where: { sale: { createdAt: { gte: monthStart }, status: SaleStatus.COMPLETED } },
+      where: {
+        sale: { createdAt: { gte: monthStart }, status: SaleStatus.COMPLETED },
+      },
       include: { product: true, sale: true },
     }),
     prisma.returnRequest.count({ where: { status: "PENDING" } }),
   ]);
 
-  const inventoryCost = products.reduce((sum, product) => sum.plus(product.stock.mul(product.cost)), new Prisma.Decimal(0));
-  const inventoryRetail = products.reduce((sum, product) => sum.plus(product.stock.mul(product.price)), new Prisma.Decimal(0));
-  const revenueToday = todaySales.reduce((sum, sale) => sum.plus(sale.total), new Prisma.Decimal(0));
-  const profitToday = todaySales.flatMap((sale) => sale.items).reduce(
-    (sum, item) => sum.plus(item.unitPrice.minus(item.unitCost).mul(item.quantity)),
+  const inventoryCost = products.reduce(
+    (sum, product) => sum.plus(product.stock.mul(product.cost)),
     new Prisma.Decimal(0),
   );
-  const monthSales = monthItems.reduce((sum, item) => sum.plus(item.total), new Prisma.Decimal(0));
+  const inventoryRetail = products.reduce(
+    (sum, product) => sum.plus(product.stock.mul(product.price)),
+    new Prisma.Decimal(0),
+  );
+  const revenueToday = todaySales.reduce(
+    (sum, sale) => sum.plus(sale.total),
+    new Prisma.Decimal(0),
+  );
+  const profitToday = todaySales
+    .flatMap((sale) => sale.items)
+    .reduce(
+      (sum, item) =>
+        sum.plus(item.unitPrice.minus(item.unitCost).mul(item.quantity)),
+      new Prisma.Decimal(0),
+    );
+  const monthSales = monthItems.reduce(
+    (sum, item) => sum.plus(item.total),
+    new Prisma.Decimal(0),
+  );
   const monthProfit = monthItems.reduce(
-    (sum, item) => sum.plus(item.unitPrice.minus(item.unitCost).mul(item.quantity)),
+    (sum, item) =>
+      sum.plus(item.unitPrice.minus(item.unitCost).mul(item.quantity)),
     new Prisma.Decimal(0),
   );
 
-  const paymentTotals: Record<PaymentMethod, number> = { CASH: 0, CARD: 0, QR: 0, TRANSFER: 0 };
-  for (const sale of todaySales) paymentTotals[sale.paymentMethod] += toNumber(sale.total);
+  const paymentTotals: Record<PaymentMethod, number> = {
+    CASH: 0,
+    CARD: 0,
+    QR: 0,
+    TRANSFER: 0,
+  };
+  for (const sale of todaySales)
+    paymentTotals[sale.paymentMethod] += toNumber(sale.total);
 
-  const sellerMap = new Map<string, { name: string; total: number; count: number }>();
-  const productMap = new Map<string, { name: string; quantity: number; total: number }>();
+  const sellerMap = new Map<
+    string,
+    { name: string; total: number; count: number }
+  >();
+  const productMap = new Map<
+    string,
+    { name: string; quantity: number; total: number }
+  >();
   for (const sale of todaySales) {
     const seller = sale.employee?.name || "Без продавца";
-    const currentSeller = sellerMap.get(seller) || { name: seller, total: 0, count: 0 };
+    const currentSeller = sellerMap.get(seller) || {
+      name: seller,
+      total: 0,
+      count: 0,
+    };
     currentSeller.total += toNumber(sale.total);
     currentSeller.count += 1;
     sellerMap.set(seller, currentSeller);
     for (const item of sale.items) {
-      const current = productMap.get(item.productId) || { name: item.product.name, quantity: 0, total: 0 };
+      const current = productMap.get(item.productId) || {
+        name: item.product.name,
+        quantity: 0,
+        total: 0,
+      };
       current.quantity += toNumber(item.quantity);
       current.total += toNumber(item.total);
       productMap.set(item.productId, current);
@@ -178,12 +247,16 @@ export async function getDashboardData() {
         categoryName: product.category.name,
         stock: toNumber(product.stock),
         minStock: toNumber(product.minStock),
-        recommendedOrderQty: toNumber(product.recommendedOrderQty) || Math.max(toNumber(product.minStock) * 2 - toNumber(product.stock), 1),
+        recommendedOrderQty:
+          toNumber(product.recommendedOrderQty) ||
+          Math.max(toNumber(product.minStock) * 2 - toNumber(product.stock), 1),
         supplierName: product.supplier?.name || "Не указан",
         unit: product.unit,
       })),
     recentSales: todaySales.slice(0, 8),
-    topProducts: [...productMap.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 6),
+    topProducts: [...productMap.values()]
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 6),
     sellerSales: [...sellerMap.values()].sort((a, b) => b.total - a.total),
   };
 }
@@ -204,7 +277,10 @@ export async function getSuppliers() {
 }
 
 export async function getProductForEdit(id: string) {
-  return prisma.product.findUnique({ where: { id }, include: { category: true, supplier: true } });
+  return prisma.product.findUnique({
+    where: { id },
+    include: { category: true, supplier: true },
+  });
 }
 
 export async function getFullHistory(limit = 150) {
@@ -217,14 +293,22 @@ export async function getFullHistory(limit = 150) {
     prisma.purchase.findMany({
       take: limit,
       orderBy: { createdAt: "desc" },
-      include: { supplier: true, employee: true, items: { include: { product: true } } },
+      include: {
+        supplier: true,
+        employee: true,
+        items: { include: { product: true } },
+      },
     }),
     prisma.stockMovement.findMany({
       take: limit,
       orderBy: { createdAt: "desc" },
       include: { product: true, employee: true },
     }),
-    prisma.auditLog.findMany({ take: limit, orderBy: { createdAt: "desc" }, include: { employee: true } }),
+    prisma.auditLog.findMany({
+      take: limit,
+      orderBy: { createdAt: "desc" },
+      include: { employee: true },
+    }),
   ]);
   return { sales, purchases, movements, audits };
 }
@@ -232,7 +316,11 @@ export async function getFullHistory(limit = 150) {
 export async function getWarehouseData() {
   const [products, movements, suppliers] = await Promise.all([
     getAdminProducts(),
-    prisma.stockMovement.findMany({ take: 100, orderBy: { createdAt: "desc" }, include: { product: true, employee: true } }),
+    prisma.stockMovement.findMany({
+      take: 100,
+      orderBy: { createdAt: "desc" },
+      include: { product: true, employee: true },
+    }),
     getSuppliers(),
   ]);
   return { products, movements, suppliers };
@@ -244,7 +332,9 @@ export async function getReorderData() {
     include: { category: true, supplier: true, reorderItem: true },
     orderBy: { name: "asc" },
   });
-  return products.filter((product) => product.stock.lte(product.minStock) || product.reorderItem);
+  return products.filter(
+    (product) => product.stock.lte(product.minStock) || product.reorderItem,
+  );
 }
 
 export async function getEmployees() {
@@ -257,19 +347,31 @@ export async function getEmployees() {
 
 export async function getReturnRequests() {
   return prisma.returnRequest.findMany({
-    include: { employee: true, approvedBy: true, sale: { include: { employee: true, items: { include: { product: true } } } } },
+    include: {
+      employee: true,
+      approvedBy: true,
+      sale: {
+        include: { employee: true, items: { include: { product: true } } },
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 }
 
 export async function getReportData(days = 30) {
-  const from = new Date();
-  from.setDate(from.getDate() - days + 1);
-  from.setHours(0, 0, 0, 0);
+  const from = startOfBishkekPeriod(days);
   const [sales, products, movements] = await Promise.all([
-    prisma.sale.findMany({ where: { createdAt: { gte: from } }, include: { employee: true, items: { include: { product: true } } }, orderBy: { createdAt: "desc" } }),
+    prisma.sale.findMany({
+      where: { createdAt: { gte: from } },
+      include: { employee: true, items: { include: { product: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
     prisma.product.findMany({ include: { category: true, supplier: true } }),
-    prisma.stockMovement.findMany({ where: { createdAt: { gte: from } }, include: { product: true, employee: true }, orderBy: { createdAt: "desc" } }),
+    prisma.stockMovement.findMany({
+      where: { createdAt: { gte: from } },
+      include: { product: true, employee: true },
+      orderBy: { createdAt: "desc" },
+    }),
   ]);
   return { from, sales, products, movements };
 }
